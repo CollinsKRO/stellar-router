@@ -42,6 +42,10 @@ RUN useradd -m -u 1000 appuser && \
 
 USER appuser
 
+# Bind on all interfaces so the server is reachable through published ports
+# (the binary defaults to 127.0.0.1:8080, which is container-loopback only).
+ENV LISTEN_ADDR=0.0.0.0:8080
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

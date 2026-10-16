@@ -35,7 +35,8 @@ stellar contract invoke --id <TIMELOCK_ID> --network testnet --source admin \
   --description "upgrade router-core to v2" \
   --target <CORE_CONTRACT_ID> \
   --delay 86400 \
-  --depends_on "[]"
+  --grace_period_seconds 86400 \
+  --deps "[]"
 ```
 
 ### Step 2 — Build the new WASM
@@ -218,9 +219,9 @@ NEW_ID="<NEW_CONTRACT_ID>"
 NETWORK="mainnet"
 SOURCE="admin"
 
-# Fetch all route names from the old contract
+# Fetch all (non-expired) route names from the old contract
 NAMES=$(stellar contract invoke --id "$OLD_ID" --network "$NETWORK" --source "$SOURCE" \
-  -- get_route_names 2>/dev/null | jq -r '.[]')
+  -- get_all_routes 2>/dev/null | jq -r '.[]')
 
 for name in $NAMES; do
   # Read route entry
@@ -229,18 +230,22 @@ for name in $NAMES; do
 
   # Register on new contract
   stellar contract invoke --id "$NEW_ID" --network "$NETWORK" --source "$SOURCE" \
-    -- register --caller "$ADMIN_ADDRESS" --name "$name" --address "$ADDR"
+    -- register_route --caller "$ADMIN_ADDRESS" --name "$name" --address "$ADDR"
 
   echo "Migrated route: $name -> $ADDR"
 done
 
-# Fetch and migrate aliases
-ALIASES=$(stellar contract invoke --id "$OLD_ID" --network "$NETWORK" --source "$SOURCE" \
-  -- get_aliases 2>/dev/null | jq -r '.[]')
+# Migrate aliases.
+# router-core exposes no public function that lists aliases, so the alias names
+# must be enumerated off-chain (e.g. from your own records or by indexing the
+# alias-added events emitted by add_alias, dropping any alias for which
+# get_alias_target now returns nothing). Provide them in a file with one alias
+# name per line.
+ALIASES=$(cat aliases.txt)
 
 for alias in $ALIASES; do
   TARGET=$(stellar contract invoke --id "$OLD_ID" --network "$NETWORK" --source "$SOURCE" \
-    -- get_alias --alias_name "$alias" 2>/dev/null)
+    -- get_alias_target --alias_name "$alias" 2>/dev/null | jq -r '.')
 
   stellar contract invoke --id "$NEW_ID" --network "$NETWORK" --source "$SOURCE" \
     -- add_alias --caller "$ADMIN_ADDRESS" --existing_name "$TARGET" --alias_name "$alias"
@@ -289,7 +294,7 @@ stellar contract invoke --id <CONTRACT_ID> --network mainnet --source admin \
 
 # Verify route count is non-zero
 stellar contract invoke --id <CONTRACT_ID> --network mainnet --source admin \
-  -- get_route_count
+  -- route_count
 
 # Spot-check a known route
 stellar contract invoke --id <CONTRACT_ID> --network mainnet --source admin \
@@ -394,13 +399,15 @@ Before upgrading any contract on mainnet:
 
 `router-registry` tracks deployed contract versions in `DataKey::Versions`
 (a `Vec<u32>`). When you deploy a new WASM version via in-place upgrade, register
-the new version in the registry immediately after the upgrade executes:
+the new version in the registry immediately after the upgrade executes by calling
+`register` with the same name and address and a new, higher version number:
 
 ```bash
 stellar contract invoke --id <REGISTRY_ID> --network mainnet --source admin \
-  -- register_version \
+  -- register \
   --caller <ADMIN_ADDRESS> \
-  --contract_id <CORE_CONTRACT_ID> \
+  --name "router-core" \
+  --address <CORE_CONTRACT_ID> \
   --version <NEW_VERSION_NUMBER>
 ```
 
@@ -412,7 +419,8 @@ stellar contract invoke --id <REGISTRY_ID> --network mainnet --source admin \
   -- register \
   --caller <ADMIN_ADDRESS> \
   --name "router-core-v2" \
-  --address <NEW_CONTRACT_ID>
+  --address <NEW_CONTRACT_ID> \
+  --version 1
 ```
 
 Keep both the old and new entries in the registry until the old contract is fully
