@@ -127,6 +127,10 @@ pub struct RouteScoreInput {
 /// Maximum upper bound allowed for route scores, including fee basis points.
 pub const MAX_SCORE_VALUE: u32 = 100;
 
+/// Default cap on simultaneously registered routes, used when `initialize`
+/// is called without `max_routes` and no `MaxRoutes` value is stored.
+pub const DEFAULT_MAX_ROUTES: u32 = 1_000;
+
 /// Maximum allowed multiplier for each configurable scoring weight.
 ///
 /// Keeping weights bounded prevents the composite-score calculation from
@@ -311,7 +315,7 @@ impl RouterCore {
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().set(&DataKey::TotalRouted, &0u64);
         env.storage().instance().set(&DataKey::RouteCount, &0u32);
-        let cap: u32 = max_routes.unwrap_or(1_000);
+        let cap: u32 = max_routes.unwrap_or(DEFAULT_MAX_ROUTES);
         env.storage().instance().set(&DataKey::MaxRoutes, &cap);
         Ok(())
     }
@@ -363,7 +367,7 @@ impl RouterCore {
             .storage()
             .instance()
             .get(&DataKey::MaxRoutes)
-            .unwrap_or(1_000);
+            .unwrap_or(DEFAULT_MAX_ROUTES);
         if count >= max {
             return Err(RouterError::TooManyRoutes);
         }
@@ -1534,12 +1538,12 @@ impl RouterCore {
     /// Get the maximum number of routes that may be registered simultaneously.
     ///
     /// Returns the cap set during [`initialize`] or by the last call to
-    /// [`set_max_routes`]. Defaults to 1 000 if never explicitly configured.
+    /// [`set_max_routes`]. Defaults to [`DEFAULT_MAX_ROUTES`] if never explicitly configured.
     pub fn get_max_routes(env: Env) -> u32 {
         env.storage()
             .instance()
             .get(&DataKey::MaxRoutes)
-            .unwrap_or(1_000)
+            .unwrap_or(DEFAULT_MAX_ROUTES)
     }
 
     /// Update the maximum number of routes that may be registered simultaneously.
@@ -1944,12 +1948,7 @@ impl RouterCore {
             return Err(RouterError::RouteNotFound);
         }
 
-        if score.liquidity_score > MAX_SCORE_VALUE
-            || score.fee_bps > MAX_SCORE_VALUE
-            || score.reliability_score > MAX_SCORE_VALUE
-        {
-            return Err(RouterError::InvalidScore);
-        }
+        Self::validate_score(&score)?;
 
         env.storage()
             .instance()
@@ -1991,12 +1990,7 @@ impl RouterCore {
                 return Err(RouterError::RouteNotFound);
             }
 
-            if item.score.liquidity_score > MAX_SCORE_VALUE
-                || item.score.fee_bps > MAX_SCORE_VALUE
-                || item.score.reliability_score > MAX_SCORE_VALUE
-            {
-                return Err(RouterError::InvalidScore);
-            }
+            Self::validate_score(&item.score)?;
         }
 
         for item in scores.iter() {
@@ -2192,9 +2186,11 @@ impl RouterCore {
             .set(&DataKey::Aliases, &updated_aliases);
     }
 
+    /// Store `alias -> target` and record the alias in the alias index.
+    ///
+    /// The caller must have already validated `alias` with
+    /// [`Self::validate_route_name`]; this function does not re-check it.
     fn add_alias_internal(env: &Env, alias: &String, target: &String) -> Result<(), RouterError> {
-        Self::validate_route_name(env, alias)?;
-
         env.storage()
             .instance()
             .set(&DataKey::Alias(alias.clone()), target);
@@ -2397,6 +2393,20 @@ impl RouterCore {
     /// # Errors
     /// * [`RouterError::InvalidRouteName`] ΓÇö if the name is empty, whitespace-only, longer than 64 chars, or contains disallowed characters.
     /// * [`RouterError::RouteAlreadyExists`] ΓÇö if the name conflicts with an existing route or alias.
+    /// Check that every field of `score` is within [`MAX_SCORE_VALUE`].
+    ///
+    /// Shared by [`Self::set_route_score`] and [`Self::set_route_scores_batch`]
+    /// so both paths enforce identical bounds.
+    fn validate_score(score: &RouteScore) -> Result<(), RouterError> {
+        if score.liquidity_score > MAX_SCORE_VALUE
+            || score.fee_bps > MAX_SCORE_VALUE
+            || score.reliability_score > MAX_SCORE_VALUE
+        {
+            return Err(RouterError::InvalidScore);
+        }
+        Ok(())
+    }
+
     fn validate_route_name(env: &Env, name: &String) -> Result<(), RouterError> {
         // Empty or longer than 64 characters is invalid.
         let len = name.len();
@@ -2535,7 +2545,7 @@ impl RouterCore {
             .storage()
             .instance()
             .get(&DataKey::MaxRoutes)
-            .unwrap_or(1_000);
+            .unwrap_or(DEFAULT_MAX_ROUTES);
         if count >= max {
             return Err(RouterError::TooManyRoutes);
         }

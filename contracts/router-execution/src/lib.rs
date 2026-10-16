@@ -700,14 +700,7 @@ impl RouterExecution {
     ) -> Result<(), ExecutionError> {
         current.require_auth();
         router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(ExecutionError::NotInitialized)?;
-        if admin != current {
-            return Err(ExecutionError::Unauthorized);
-        }
+        router_common::require_admin_simple!(&env, &current, &DataKey::Admin, ExecutionError)?;
         router_common::admin_transfer_complete!(&env, &current, &new_admin, &DataKey::Admin);
         Ok(())
     }
@@ -721,14 +714,7 @@ impl RouterExecution {
     pub fn set_max_retries(env: Env, caller: Address, new_max: u32) -> Result<(), ExecutionError> {
         caller.require_auth();
         router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(ExecutionError::NotInitialized)?;
-        if admin != caller {
-            return Err(ExecutionError::Unauthorized);
-        }
+        router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, ExecutionError)?;
         if new_max == 0 || new_max > 5 {
             return Err(ExecutionError::InvalidConfig);
         }
@@ -760,14 +746,7 @@ impl RouterExecution {
     ) -> Result<(), ExecutionError> {
         caller.require_auth();
         router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(ExecutionError::NotInitialized)?;
-        if admin != caller {
-            return Err(ExecutionError::Unauthorized);
-        }
+        router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, ExecutionError)?;
         if new_max == 0 || new_max > MAX_HISTORY_SIZE_CAP {
             return Err(ExecutionError::InvalidConfig);
         }
