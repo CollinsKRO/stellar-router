@@ -949,12 +949,7 @@ impl RouterTimelock {
         );
         router_common::require_admin_simple!(&env, &current, &DataKey::Admin, TimelockError)?;
 
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
-
-        env.events().publish(
-            (Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED),),
-            (current, new_admin),
-        );
+        router_common::admin_transfer_complete!(&env, &current, &new_admin, &DataKey::Admin);
 
         Ok(())
     }
