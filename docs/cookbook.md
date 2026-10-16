@@ -250,9 +250,9 @@ stellar contract invoke --id <TIMELOCK_ID> --network testnet --source admin \
 
 ---
 
-## 5. Multi-Hop Quote & Execution
+## 5. Quote Comparison & Batched Execution
 
-Get quotes for multiple routes, pick the best one, and execute a batch of swaps via multicall.
+Compare quotes across routes, pick the best one, and execute a batch of calls via multicall.
 
 ### Configure quote fees
 
@@ -299,8 +299,10 @@ stellar contract invoke --id <MULTICALL_ID> --network testnet --source admin \
 stellar contract invoke --id <MULTICALL_ID> --network testnet --source user \
   -- execute_batch \
   --caller <USER> \
-  --calls '[{"target": "<DEX_A>", "function": "swap", "required": true, "budget": null}, {"target": "<DEX_B>", "function": "swap", "required": false, "budget": null}]' \
-  --simulate false
+  --calls '[{"target": "<DEX_A>", "function": "swap", "required": true, "instruction_budget": null, "args": []}, {"target": "<DEX_B>", "function": "swap", "required": false, "instruction_budget": null, "args": []}]' \
+  --simulate false \
+  --store_results false \
+  --fail_fast false
 ```
 
 ### Check multicall stats

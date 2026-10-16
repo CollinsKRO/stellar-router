@@ -206,9 +206,9 @@ cargo build
 
 ### Test
 
-Run unit tests:
+Run all unit tests across the contract workspace and off-chain crates:
 ```bash
-cargo test
+make test-all
 ```
 
 Run integration tests on Stellar testnet:
@@ -217,10 +217,16 @@ Run integration tests on Stellar testnet:
 ./scripts/run-integration-tests.sh
 
 # Or manually
-cargo test --test integration_tests -- --ignored --test-threads=1 --nocapture
+cargo test --manifest-path integration-tests/Cargo.toml --test integration_tests -- --ignored --test-threads=1 --nocapture
 ```
 
 See [integration-tests/tests/README.md](integration-tests/tests/README.md) for detailed integration test documentation.
+
+Check formatting and linting across the root workspace and off-chain crates:
+```bash
+make fmt-check
+make lint
+```
 
 ### Build for Deployment (WASM)
 
