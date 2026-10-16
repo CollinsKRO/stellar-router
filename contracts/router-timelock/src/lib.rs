@@ -697,12 +697,19 @@ impl RouterTimelock {
     /// Iterates the pending ops index to compute counts efficiently without
     /// loading all operation data. Useful for dashboards and monitoring.
     ///
+    /// Only operations in the pending index (`DataKey::PendingOps`) are
+    /// considered. `cancel` and `execute` remove an operation from that index,
+    /// so [`OperationStatus::Executed`] and [`OperationStatus::Cancelled`]
+    /// always yield `0`. Use [`Self::get_operation_status`] with an `op_id` to
+    /// query a finalized operation.
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment.
     /// * `status` - The [`OperationStatus`] to count.
     ///
     /// # Returns
-    /// The count of operations matching the given status.
+    /// The count of pending operations matching the given status (always `0`
+    /// for `Executed` and `Cancelled`).
     pub fn get_operation_count_by_status(env: Env, status: OperationStatus) -> u32 {
         router_common::extend_instance_ttl(
             &env,
@@ -768,7 +775,13 @@ impl RouterTimelock {
         count
     }
 
-    /// Get all operations matching a specific status.
+    /// Get all pending operations matching a specific status.
+    ///
+    /// Only operations in the pending index (`DataKey::PendingOps`) are
+    /// considered. `cancel` and `execute` remove an operation from that index,
+    /// so [`OperationStatus::Executed`] and [`OperationStatus::Cancelled`]
+    /// always yield an empty list. Use [`Self::get_operation_status`] with an
+    /// `op_id` to query a finalized operation.
     pub fn get_operations_by_status(env: Env, status: OperationStatus) -> Vec<(Bytes, Op)> {
         router_common::extend_instance_ttl(
             &env,
@@ -2183,7 +2196,9 @@ mod tests {
         assert_eq!(client.get_pending_operations().len(), 1);
 
         // get_operation_count_by_status should reflect the state.
-        // Since cancelled ops are completely removed, they count as 0.
+        // Cancelled ops are removed from the pending index (they are kept in
+        // FinalizedOps until cleanup_expired), and this count only scans the
+        // pending index, so Cancelled always counts as 0.
         assert_eq!(
             client.get_operation_count_by_status(&OperationStatus::Cancelled),
             0

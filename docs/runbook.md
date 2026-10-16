@@ -16,6 +16,9 @@ Replace placeholders:
 - `<ACCESS_ID>` — router-access contract ID
 - `<MIDDLEWARE_ID>` — router-middleware contract ID
 - `<TIMELOCK_ID>` — router-timelock contract ID
+- `<EXECUTION_ID>` — router-execution contract ID
+- `<MULTICALL_ID>` — router-multicall contract ID
+- `<QUOTE_ID>` — router-quote contract ID
 - `<ADMIN>` — current admin address
 - `<NETWORK>` — `testnet` or `mainnet`
 
@@ -86,10 +89,10 @@ The middleware contract enforces per-caller rate limits. When a caller exceeds t
 
 ```bash
 stellar contract invoke --id <MIDDLEWARE_ID> --network <NETWORK> --source <ADMIN_KEY> \
-  -- rate_limit_state --caller <CALLER_ADDRESS>
+  -- rate_limit_state --route <ROUTE_NAME> --caller <CALLER_ADDRESS>
 ```
 
-This returns `calls_in_window` and `window_start`. Compare against the route config.
+This returns `calls_in_window`, `window_start` and `total_violations` for that caller on that route. Compare against the route config.
 
 ### Check route configuration
 
@@ -98,7 +101,7 @@ stellar contract invoke --id <MIDDLEWARE_ID> --network <NETWORK> --source <ADMIN
   -- route_config --route <ROUTE_NAME>
 ```
 
-Returns `max_calls_per_window`, `window_seconds`, and `enabled`.
+Returns `max_calls_per_window`, `window_seconds`, `enabled`, `failure_threshold`, `recovery_window_seconds`, `log_retention`, and `burst_allowance`.
 
 ### Temporarily increase rate limit
 
@@ -111,8 +114,14 @@ stellar contract invoke --id <MIDDLEWARE_ID> --network <NETWORK> --source <ADMIN
   --route <ROUTE_NAME> \
   --max_calls_per_window <NEW_LIMIT> \
   --window_seconds <WINDOW> \
-  --enabled true
+  --enabled true \
+  --failure_threshold <FAILURE_THRESHOLD> \
+  --recovery_window_seconds <RECOVERY_WINDOW> \
+  --log_retention <LOG_RETENTION> \
+  --burst_allowance <BURST_ALLOWANCE>
 ```
+
+`configure_route` overwrites the whole route config, so pass the current values of `failure_threshold`, `recovery_window_seconds`, `log_retention`, and `burst_allowance` (from `route_config` above) to leave them unchanged.
 
 ### Disable middleware globally (emergency only)
 
@@ -148,7 +157,9 @@ stellar contract invoke --id <TIMELOCK_ID> --network <NETWORK> --source <ADMIN_K
   --proposer <ADMIN> \
   --description "rotate admin to <NEW_ADMIN>" \
   --target <CORE_ID> \
-  --delay 86400
+  --delay 86400 \
+  --grace_period_seconds <GRACE_PERIOD> \
+  --deps '[]'
 ```
 
 For emergency transfers, transfer directly on each contract:
@@ -171,7 +182,35 @@ stellar contract invoke --id <ACCESS_ID> --network <NETWORK> --source <ADMIN_KEY
   -- transfer_super_admin --current <ADMIN> --new_admin <NEW_ADMIN>
 ```
 
-**router-middleware** and **router-timelock** do not expose `transfer_admin`. Redeployment is required to change their admin.
+**router-middleware:**
+```bash
+stellar contract invoke --id <MIDDLEWARE_ID> --network <NETWORK> --source <ADMIN_KEY> \
+  -- transfer_admin --current <ADMIN> --new_admin <NEW_ADMIN>
+```
+
+**router-timelock:**
+```bash
+stellar contract invoke --id <TIMELOCK_ID> --network <NETWORK> --source <ADMIN_KEY> \
+  -- transfer_admin --current <ADMIN> --new_admin <NEW_ADMIN>
+```
+
+**router-execution:**
+```bash
+stellar contract invoke --id <EXECUTION_ID> --network <NETWORK> --source <ADMIN_KEY> \
+  -- transfer_admin --current <ADMIN> --new_admin <NEW_ADMIN>
+```
+
+**router-multicall:**
+```bash
+stellar contract invoke --id <MULTICALL_ID> --network <NETWORK> --source <ADMIN_KEY> \
+  -- transfer_admin --current <ADMIN> --new_admin <NEW_ADMIN>
+```
+
+**router-quote:**
+```bash
+stellar contract invoke --id <QUOTE_ID> --network <NETWORK> --source <ADMIN_KEY> \
+  -- transfer_admin --current <ADMIN> --new_admin <NEW_ADMIN>
+```
 
 ### Verification checklist
 
@@ -192,6 +231,14 @@ stellar contract invoke --id <REGISTRY_ID> --network <NETWORK> --source <NEW_ADM
 stellar contract invoke --id <ACCESS_ID> --network <NETWORK> --source <NEW_ADMIN_KEY> \
   -- super_admin
 # Expected: <NEW_ADMIN>
+
+# Verify router-middleware, router-timelock, router-execution,
+# router-multicall and router-quote admins
+for ID in <MIDDLEWARE_ID> <TIMELOCK_ID> <EXECUTION_ID> <MULTICALL_ID> <QUOTE_ID>; do
+  stellar contract invoke --id "$ID" --network <NETWORK> --source <NEW_ADMIN_KEY> \
+    -- admin
+done
+# Expected: <NEW_ADMIN> for each
 ```
 
 Confirm the old admin can no longer perform admin operations:
@@ -238,8 +285,14 @@ stellar contract invoke --id <MIDDLEWARE_ID> --network <NETWORK> --source <ADMIN
   --route <ROUTE_NAME> \
   --max_calls_per_window 100 \
   --window_seconds 3600 \
-  --enabled true
+  --enabled true \
+  --failure_threshold 0 \
+  --recovery_window_seconds 0 \
+  --log_retention 0 \
+  --burst_allowance 0
 ```
+
+A `failure_threshold` of `0` disables the circuit breaker, a `log_retention` of `0` disables the call log, and a `burst_allowance` of `0` allows no calls above `max_calls_per_window`.
 
 ### Step 4: Set up access control (if needed)
 
@@ -247,10 +300,12 @@ stellar contract invoke --id <MIDDLEWARE_ID> --network <NETWORK> --source <ADMIN
 # Grant operator role to the route's service account
 stellar contract invoke --id <ACCESS_ID> --network <NETWORK> --source <ADMIN_KEY> \
   -- grant_role \
-  --caller <ADMIN> \
-  --role operator \
-  --target <SERVICE_ACCOUNT>
+  --admin <ADMIN> \
+  --account <SERVICE_ACCOUNT> \
+  --role operator
 ```
+
+`expires_in` is optional; pass `--expires_in <SECONDS>` to make the grant expire.
 
 ### Validation after registration
 
@@ -324,7 +379,7 @@ stellar contract invoke --id <MIDDLEWARE_ID> --network <NETWORK> --source <ADMIN
 4. **Check access control:**
    ```bash
    stellar contract invoke --id <ACCESS_ID> --network <NETWORK> --source <ADMIN_KEY> \
-     -- has_role --role operator --target <CALLER_ADDRESS>
+     -- has_role --account <CALLER_ADDRESS> --role operator
 
    stellar contract invoke --id <ACCESS_ID> --network <NETWORK> --source <ADMIN_KEY> \
      -- is_blacklisted --target <CALLER_ADDRESS>
