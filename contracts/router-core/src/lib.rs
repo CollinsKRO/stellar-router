@@ -703,25 +703,36 @@ impl RouterCore {
 
     /// Register multiple routes in a single transaction.
     ///
-    /// Associates multiple human-readable names with target contract addresses
-    /// in a single atomic operation. All routes start in an unpaused state.
-    /// Caller must be the admin. If any route fails validation, the entire
-    /// batch fails and no routes are registered.
+    /// Associates multiple human-readable names with target contract addresses.
+    /// All routes start in an unpaused state with no metadata. Caller must be
+    /// the admin.
+    ///
+    /// Behaviour depends on `fail_fast`:
+    /// * `fail_fast = true` — every item is validated first. At the first
+    ///   invalid item (duplicate name within the batch, invalid name, or name
+    ///   already registered) the call returns a [`router_common::BatchResult`]
+    ///   containing only that item's failure, and no routes are registered.
+    /// * `fail_fast = false` — each item is registered independently. Valid
+    ///   items are registered and recorded in `successes`; each invalid item is
+    ///   skipped and recorded in `failures` with its index and reason. The
+    ///   batch is **not** all-or-nothing, so callers must inspect `failures`.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment.
     /// * `caller` - The address initiating the call; must be the admin.
-    /// * `routes` - A vector of tuples (name, address, metadata) for each route to register.
+    /// * `routes` - A vector of [`RouteRegisterInput`] (name, address) for each route to register.
+    /// * `fail_fast` - Stop at the first invalid item and apply nothing (`true`),
+    ///   or apply valid items and record failures per index (`false`).
     ///
     /// # Returns
-    /// `Ok(())` on success.
+    /// A [`router_common::BatchResult`] whose `successes` list the indices of
+    /// registered routes and whose `failures` list the index and
+    /// [`router_common::BatchItemError`] of each route that was not registered
+    /// (e.g. already exists, invalid name).
     ///
     /// # Errors
-    /// * [`RouterError::Unauthorized`] ΓÇö if `caller` is not the admin.
-    /// * [`RouterError::RouteAlreadyExists`] ΓÇö if any route name already exists.
-    /// * [`RouterError::InvalidRouteName`] ΓÇö if any route name is empty or whitespace-only.
-    /// * [`RouterError::InvalidMetadata`] ΓÇö if any metadata is invalid.
-    /// * [`RouterError::NotInitialized`] ΓÇö if the contract has not been initialized.
+    /// * [`RouterError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`RouterError::NotInitialized`] — if the contract has not been initialized.
     pub fn register_routes_batch(
         env: Env,
         caller: Address,
@@ -792,22 +803,36 @@ impl RouterCore {
 
     /// Remove multiple routes in a single transaction.
     ///
-    /// Deletes route entries for all specified names from storage and removes
+    /// Deletes route entries for the specified names from storage and removes
     /// any aliases that point to these routes. Caller must be the admin.
-    /// If any route is not found, the entire batch fails and no routes are removed.
+    ///
+    /// Behaviour depends on `fail_fast`:
+    /// * `fail_fast = true` — every name is checked first. At the first name
+    ///   that is not a registered route, the call returns a
+    ///   [`router_common::BatchResult`] containing only that item's failure,
+    ///   and no routes are removed.
+    /// * `fail_fast = false` — each name is removed independently. Existing
+    ///   routes are removed and recorded in `successes`; each missing route is
+    ///   recorded in `failures` with its index and reason. The batch is **not**
+    ///   all-or-nothing, so callers must inspect `failures`.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment.
     /// * `caller` - The address initiating the call; must be the admin.
     /// * `names` - A vector of route names to remove.
+    /// * `fail_fast` - Stop at the first missing route and remove nothing
+    ///   (`true`), or remove existing routes and record failures per index
+    ///   (`false`).
     ///
     /// # Returns
-    /// `Ok(())` on success.
+    /// A [`router_common::BatchResult`] whose `successes` list the indices of
+    /// removed routes and whose `failures` list the index and
+    /// [`router_common::BatchItemError`] of each route that was not removed
+    /// (e.g. route not found).
     ///
     /// # Errors
-    /// * [`RouterError::Unauthorized`] ΓÇö if `caller` is not the admin.
-    /// * [`RouterError::RouteNotFound`] ΓÇö if any route name does not exist.
-    /// * [`RouterError::NotInitialized`] ΓÇö if the contract has not been initialized.
+    /// * [`RouterError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`RouterError::NotInitialized`] — if the contract has not been initialized.
     pub fn remove_routes_batch(
         env: Env,
         caller: Address,

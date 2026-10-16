@@ -99,6 +99,11 @@ pub enum DataKey {
 /// - **Simulation** (2xx): pre-execution validation failures — execution is blocked.
 /// - **Contract** (3xx): on-chain contract-level rejections — not retried.
 /// - **Config** (4xx): misconfiguration or unauthorized access.
+///
+/// Note: `NetworkTimeout` (101), `NetworkUnavailable` (102),
+/// `SimulationInsufficientResources` (202), `ContractNotFound` (302) and
+/// `ContractFunctionNotFound` (303) are reserved and are not currently
+/// returned by any entry point.
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ExecutionError {
@@ -394,9 +399,11 @@ impl RouterExecution {
     /// via `try_invoke_contract` before the real call. A failed simulation blocks
     /// execution and returns [`ExecutionError::SimulationFailed`].
     ///
-    /// Network errors (codes 101–102) are retried up to
-    /// `min(request.max_retries, global_max_retries)` times. All other errors
-    /// are returned immediately without retry.
+    /// The contract call does not inspect error codes: any failed invocation
+    /// (including a contract-level rejection) is retried up to
+    /// `min(request.max_retries, global_max_retries)` times, emitting an
+    /// `execution_retry` event before each retry. If every attempt fails,
+    /// [`ExecutionError::ContractRejected`] is returned.
     ///
     /// Every outcome (success or failure) is logged via an `execution_result`
     /// event so off-chain observers can monitor the pipeline.
@@ -405,6 +412,8 @@ impl RouterExecution {
     /// * [`ExecutionError::SimulationFailed`] — simulation detected a would-fail tx.
     /// * [`ExecutionError::ContractRejected`] — contract call failed after all retries.
     /// * [`ExecutionError::NotInitialized`] — contract not initialized.
+    /// * [`ExecutionError::InvalidAmount`] — `request.amount` is zero or negative.
+    /// * [`ExecutionError::ArgsTooLarge`] — `request.args` exceeds `MAX_ARGS_PER_CALL`.
     pub fn execute(
         env: Env,
         caller: Address,

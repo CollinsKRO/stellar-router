@@ -10,11 +10,15 @@
 //! duplicated between the route-level and per-caller-override paths.
 //!
 //! Note on violation accounting: there is a single shared `total_violations`
-//! counter on [`RateLimitState`]. It is incremented identically whenever a
-//! call exceeds the effective limit, regardless of which
-//! [`crate::RateLimitStrategy`] the route is configured with. The strategies
-//! do not maintain any strategy-specific counters — they differ only in how
-//! the caller reacts to an exceeded limit (reject vs. allow-and-emit-event).
+//! counter on [`RateLimitState`]. This module increments it whenever a call
+//! exceeds the effective limit, but the increment only persists when the
+//! invocation succeeds. Under [`crate::RateLimitStrategy::Throttle`] and
+//! [`crate::RateLimitStrategy::LogOnly`], `pre_call` returns `Ok`, so the
+//! over-limit call is recorded. Under [`crate::RateLimitStrategy::Reject`],
+//! `pre_call` returns `RateLimitExceeded` and Soroban rolls back every storage
+//! write of the failed invocation, so rejected calls are never recorded in
+//! `total_violations`. The strategies do not maintain any strategy-specific
+//! counters.
 
 use soroban_sdk::{Address, Env, String, Symbol};
 
