@@ -51,15 +51,18 @@ services:
     profiles: ["wasm"]
 
   # ── Metrics exporter ────────────────────────────────────────────────────────
-  metrics-exporter:
+  router-metrics-exporter:
     build:
       context: .
       target: metrics
     environment:
       ROUTER_RPC_URL: ${ROUTER_RPC_URL:-https://soroban-testnet.stellar.org}
+      ROUTER_NETWORK_PASSPHRASE: ${ROUTER_NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}
       ROUTER_CORE_CONTRACT_ID: ${ROUTER_CORE_CONTRACT_ID:-}
       ROUTER_MIDDLEWARE_CONTRACT_ID: ${ROUTER_MIDDLEWARE_CONTRACT_ID:-}
       ROUTER_REGISTRY_CONTRACT_ID: ${ROUTER_REGISTRY_CONTRACT_ID:-}
+      ROUTER_QUOTE_CONTRACT_ID: ${ROUTER_QUOTE_CONTRACT_ID:-}
+      ROUTER_EXECUTION_CONTRACT_ID: ${ROUTER_EXECUTION_CONTRACT_ID:-}
       ROUTER_SCRAPE_INTERVAL_SECS: ${ROUTER_SCRAPE_INTERVAL_SECS:-15}
     ports:
       - "9090:9090"
@@ -77,6 +80,7 @@ services:
     image: prom/prometheus:v2.51.2
     volumes:
       - ./metrics/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./metrics/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     ports:
       - "9091:9090"
