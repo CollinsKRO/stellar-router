@@ -75,9 +75,16 @@ Uses range-based codes to distinguish error categories.
 | 301  | `ContractRejected` | Contract |
 | 302  | `ContractNotFound` | Contract |
 | 303  | `ContractFunctionNotFound` | Contract |
+| 401  | `AlreadyInitialized` | Config/auth |
+| 402  | `NotInitialized` | Config/auth |
+| 403  | `Unauthorized` | Config/auth |
+| 404  | `InvalidConfig` | Config/auth |
+| 405  | `InvalidAmount` | Config/auth |
+| 406  | `ArgsTooLarge` | Config/auth |
 | **103** | ← next network code |
 | **203** | ← next simulation code |
 | **304** | ← next contract code |
+| **407** | ← next config/auth code |
 
 ---
 
@@ -93,7 +100,9 @@ Uses range-based codes to distinguish error categories.
 | 6    | `RequiredCallFailed` |
 | 7    | `InvalidConfig` |
 | 8    | `Reentrancy` |
-| **9** | ← next available |
+| 9    | `GasLimitExceeded` |
+| 10   | `ArgsTooLarge` |
+| **11** | ← next available |
 
 ---
 
@@ -107,9 +116,12 @@ Uses range-based codes to distinguish error categories.
 | 4    | `InvalidAmount` |
 | 5    | `InvalidFeeBps` |
 | 6    | `NoQuotesProvided` |
-| 7    | `RouteNotFound` |
+| 7    | `RouteNotFound` *(retired; do not reuse)* |
 | 8    | `ArithmeticOverflow` |
-| **9** | ← next available |
+| 9    | `TooManyRoutes` |
+| 10   | `InvalidFeeTier` |
+| 11   | `TooManyTiers` |
+| **12** | ← next available |
 
 ---
 
@@ -190,8 +202,8 @@ Uses range-based codes to distinguish error categories.
    mainnet deployment by reassigning one of the duplicate variants to the "next
    available" code and publishing a migration note.
 
-6. **router-execution uses ranges** — continue that convention:
+6. **router-execution uses ranges** — continue that convention. The `4xx` range is already in use for config/auth errors:
    - `1xx` for network/transient errors
    - `2xx` for simulation errors
    - `3xx` for contract-call errors
-   - Add a new range (e.g. `4xx`) for entirely new error categories
+   - `4xx` for config/auth errors

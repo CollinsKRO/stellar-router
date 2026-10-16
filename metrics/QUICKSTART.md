@@ -16,9 +16,9 @@ After deploying your router contracts, note their contract IDs:
 
 ```bash
 # Example contract IDs (replace with yours)
-CORE_ID="CBGTG4XVLSQFXK7JXQXQXQXQXQXQXQXQXQXQXQXQXQXQXQXQXQXQXQ"
-MIDDLEWARE_ID="CBGTG4XVLSQFXK7JXQXQXQXQXQXQXQXQXQXQXQXQXQXQXQXQXQXQXQ"
-REGISTRY_ID="CBGTG4XVLSQFXK7JXQXQXQXQXQXQXQXQXQXQXQXQXQXQXQXQXQXQXQ"
+CORE_ID="CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+MIDDLEWARE_ID="CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+REGISTRY_ID="CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 ```
 
 ### Step 2: Build the Exporter
@@ -76,6 +76,8 @@ ROUTER_RPC_URL=https://soroban-testnet.stellar.org
 ROUTER_CORE_CONTRACT_ID=CBGTG4XVLSQFXK7J...
 ROUTER_MIDDLEWARE_CONTRACT_ID=CBGTG4XVLSQFXK7J...
 ROUTER_REGISTRY_CONTRACT_ID=CBGTG4XVLSQFXK7J...
+ROUTER_QUOTE_CONTRACT_ID=CBGTG4XVLSQFXK7J...
+ROUTER_EXECUTION_CONTRACT_ID=CBGTG4XVLSQFXK7J...
 ROUTER_SCRAPE_INTERVAL_SECS=30
 ```
 
@@ -100,14 +102,11 @@ This starts:
 | Prometheus | http://localhost:9091 | — |
 | Grafana | http://localhost:3000 | admin / admin |
 
-### Step 4: Import Grafana Dashboard
+### Step 4: View Grafana Dashboard
 
-1. Open Grafana at http://localhost:3000
-2. Login with `admin` / `admin`
-3. Go to **Dashboards** → **Import**
-4. Upload `grafana-dashboard.json`
-5. Select **Prometheus** as the data source
-6. Click **Import**
+Docker Compose automatically provisions `dashboards/stellar-router.json` in Grafana;
+no manual dashboard import is required. Open Grafana at http://localhost:3000 and
+login with `admin` / `admin` to view it.
 
 ✅ **Done!** You now have a full monitoring stack.
 
@@ -316,9 +315,12 @@ stellar contract invoke --id <CONTRACT_ID> --network testnet -- total_routed
 | Flag | Env Var | Default | Description |
 |------|---------|---------|-------------|
 | `--rpc-url` | `ROUTER_RPC_URL` | `https://soroban-testnet.stellar.org` | Soroban RPC endpoint |
+| `--network-passphrase` | `ROUTER_NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` | Stellar network passphrase |
 | `--core-contract-id` | `ROUTER_CORE_CONTRACT_ID` | `` | router-core contract ID |
 | `--middleware-contract-id` | `ROUTER_MIDDLEWARE_CONTRACT_ID` | `` | router-middleware contract ID |
 | `--registry-contract-id` | `ROUTER_REGISTRY_CONTRACT_ID` | `` | router-registry contract ID |
+| `--quote-contract-id` | `ROUTER_QUOTE_CONTRACT_ID` | `` | router-quote contract ID |
+| `--execution-contract-id` | `ROUTER_EXECUTION_CONTRACT_ID` | `` | router-execution contract ID |
 | `--scrape-interval-secs` | `ROUTER_SCRAPE_INTERVAL_SECS` | `15` | Scrape interval (seconds) |
 | `--listen` | `ROUTER_LISTEN` | `0.0.0.0:9090` | HTTP listen address |
 | `--rpc-timeout-secs` | `ROUTER_RPC_TIMEOUT_SECS` | `10` | RPC timeout (seconds) |
