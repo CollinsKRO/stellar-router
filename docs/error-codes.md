@@ -156,7 +156,13 @@ Uses range-based codes to distinguish error categories.
 | 5    | `RoleNotFound` |
 | 6    | `Blacklisted` |
 | 7    | `CannotBlacklistAdmin` |
-| **8** | ← next available |
+| 8    | `DestinationAlreadyHasRole` |
+| 9    | `HierarchyCycle` |
+| 10   | `InvalidExpiry` |
+| 11   | `HierarchyTooDeep` |
+| 12   | `MaxRolesExceeded` |
+| 13   | `MaxGrantsPerRoleExceeded` |
+| **14** | ← next available |
 
 ---
 

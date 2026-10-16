@@ -3,11 +3,12 @@
 //! # router-core
 //!
 //! Central dispatcher for the stellar-router suite.
-//! Routes calls to registered contracts by name, enforces access control,
-//! and delegates to the registry for address resolution.
+//! Routes calls to registered contracts by name and enforces access control.
+//! Route addresses are stored and resolved in router-core's own storage; it does
+//! not depend on router-registry.
 //!
 //! ## Features
-//! - Route calls to contracts by name (resolved via registry)
+//! - Route calls to contracts by name (resolved from router-core's own route storage)
 //! - Admin-controlled route registration and removal
 //! - Pause/unpause individual routes or all routing
 //! - Event emission on every route operation
@@ -21,7 +22,7 @@
 //! - `route_resolve_paused` ΓÇö Route resolution paused (route_name)
 //! - `routed` ΓÇö Route resolved (route_name, address)
 //! - `router_paused` ΓÇö Router globally paused/unpaused (paused)
-//! - `metadata_updated` ΓÇö Route metadata updated (route_name, metadata)
+//! - `metadata_updated` ΓÇö Route metadata updated (route_name, has_metadata: bool)
 //! - `route_tag_added` ΓÇö Route tag added (route_name, tag)
 //! - `route_tag_removed` ΓÇö Route tag removed (route_name, tag)
 //! - `route_ttl_set` ΓÇö Route TTL set at registration (route_name, expiry_ledger)
@@ -30,10 +31,8 @@
 //! - `alias_added` ΓÇö Route alias added (existing_name, alias_name)
 //! - `alias_removed` ΓÇö Route alias removed (alias_name)
 //! - `alias_resolved` ΓÇö Route alias resolved (alias_name, selected_route_name)
-//! - `route_scored` ΓÇö Route score updated (route_name, score)
 //! - `best_route_selected` ΓÇö Best route selected (route_name, best_score)
 //! - `route_scored` ΓÇö Route score updated (route_name, liquidity_score, fee_bps, reliability_score)
-//! - `best_route_selected` ΓÇö Best route selected (route_name)
 //! - `admin_transferred` ΓÇö Admin transferred (old_admin, new_admin)
 
 pub mod scoring;
