@@ -39,6 +39,9 @@ different things depending on which contract returned it.
 | `VersionNotFound` | 8 | `deprecate` targets a version that is not registered for the name. | Check `versions(name)` and retry with an existing version. |
 | `InvalidConstraint` | 9 | A semver constraint cannot be parsed or uses an unsupported form. | Use exact, `>`, `>=`, `<`, `<=`, `^`, or `~` constraints. |
 | `AllVersionsDeprecated` | 10 | Lookup finds versions, but every matching entry is deprecated. | Register a newer active version or allow deprecated versions in the caller logic. |
+| `ContractUnreachable` | 11 | `register_with_check` could not successfully invoke the supplied health function on the target address. | Confirm the target exposes the allow-listed `health` or `ping` function and that it returns successfully. |
+| `InvalidHealthFn` | 12 | `register_with_check` was given a `health_fn` outside the `health` / `ping` allow-list. | Pass `None` or use `health` / `ping`. |
+| `BatchTooLarge` | 13 | `bulk_register` or `deprecate_many` was called with more than 50 entries (`MAX_BULK_BATCH_SIZE`). | Split the entries into batches of at most 50. |
 
 ### router-access `AccessError`
 
@@ -529,9 +532,15 @@ across callers.
 1. On the first call, `window_start` is set to the current ledger timestamp
    and `calls_in_window` is set to 1.
 2. Subsequent calls within the same window increment `calls_in_window`.
-3. When `calls_in_window >= max_calls_per_window`, `pre_call` returns
-   `RateLimitExceeded` and increments `total_violations` without counting
-   the call.
+3. When `calls_in_window` reaches the effective limit —
+   `max_calls_per_window + burst_allowance`, or the per-caller override's
+   `max_calls` when one applies — the call is over the limit. Under the
+   default `Reject` strategy, `pre_call` returns `RateLimitExceeded`; because
+   Soroban rolls back all storage writes of a failed invocation, the rejected
+   call is **not** recorded in `total_violations`. Under `Throttle` and
+   `LogOnly`, `pre_call` returns `Ok`, so the over-limit call is allowed
+   through and `total_violations` is incremented. `total_violations` therefore
+   counts over-limit calls that were allowed through, not rejected ones.
 4. On the first call after `window_start + window_seconds` has elapsed, the
    window resets: `window_start = now`, `calls_in_window = 1`.
 
@@ -848,6 +857,7 @@ Each contract defines its own `#[contracterror]` enum. Use the tables below as t
 | `AllVersionsDeprecated` | `10` | Lookup finds only deprecated versions for a name | Register a new active version or allow deprecated fallback intentionally |
 | `ContractUnreachable` | `11` | `register_with_check` failed to invoke the supplied health function on the target address | Confirm the target contract exposes the allow-listed `health` or `ping` function and that it returns successfully |
 | `InvalidHealthFn` | `12` | `register_with_check` rejected `health_fn` because it was not in the `health` / `ping` allow-list (issue #828) | Pass `None` or use one of `health` / `ping`; pass-through arbitrary symbols are no longer accepted to prevent state-mutating entry points being invoked on the target during registration |
+| `BatchTooLarge` | `13` | `bulk_register` or `deprecate_many` called with more than 50 entries (`MAX_BULK_BATCH_SIZE`) | Split the entries into batches of at most 50 and submit each separately |
 
 ### router-access (`AccessError`)
 

@@ -69,7 +69,11 @@ pub struct RateLimitState {
     pub calls_in_window: u32,
     /// Timestamp when window started
     pub window_start: u64,
-    /// Total number of times rate limit was exceeded
+    /// Number of over-limit calls that were allowed through under the
+    /// `Throttle` or `LogOnly` strategy. Calls rejected under the `Reject`
+    /// strategy are not counted: `pre_call` returns `RateLimitExceeded`, and
+    /// the failed invocation's storage writes (including this counter) are
+    /// rolled back.
     pub total_violations: u32,
 }
 
