@@ -6,6 +6,9 @@ global:
     cluster: 'stellar-router'
     environment: 'testnet'
 
+rule_files:
+  - '/etc/prometheus/alerts.yml'
+
 scrape_configs:
   - job_name: 'stellar-router'
     scrape_interval: 30s

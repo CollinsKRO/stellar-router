@@ -458,6 +458,7 @@ impl RouterMiddleware {
             // Circuit breaker check: transitions open→half-open if recovery
             // window has elapsed; returns true when the call must be blocked.
             if config.failure_threshold > 0 {
+                let cb_before = route_call_state.circuit_breaker.clone();
                 let blocked = circuit_breaker::check_and_transition(
                     &env,
                     &route,
@@ -474,9 +475,11 @@ impl RouterMiddleware {
                         .remove(&DataKey::Executing(route.clone()));
                     return Err(MiddlewareError::CircuitOpen);
                 }
-                // check_and_transition may have mutated the circuit breaker
-                // (open → half-open). Mark state as dirty so it gets persisted.
-                state_changed = true;
+                // Only mark dirty if check_and_transition actually mutated the
+                // circuit breaker (i.e. open → half-open transition occurred).
+                if route_call_state.circuit_breaker != cb_before {
+                    state_changed = true;
+                }
             }
 
             // Rate limit check: enforce route-level limit only if set, but always

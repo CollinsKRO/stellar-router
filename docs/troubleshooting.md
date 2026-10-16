@@ -21,7 +21,7 @@ error, timeout, or "endpoint not reachable" message.
 
 4. Metrics exporter shows no data after startup:
    ```bash
-   docker compose logs metrics-exporter
+   docker compose logs router-metrics-exporter
    ```
    Look for `scrape error` or `connection refused` lines. Confirm the contract IDs
    are set and the RPC URL is reachable from inside the container.

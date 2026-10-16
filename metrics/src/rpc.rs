@@ -387,36 +387,6 @@ fn extract_string_vec_from_sim_result(result: &Value) -> Result<Vec<String>> {
     Ok(vec![])
 }
 
-// ── Storage key XDR helpers ───────────────────────────────────────────────────
-
-/// Build the base64-encoded XDR key for a `ContractData` ledger entry.
-///
-/// This is used with `getLedgerEntries` to read contract storage directly
-/// without needing to simulate a transaction.
-///
-/// The key format is:
-/// ```text
-/// LedgerKey::ContractData {
-///     contract: ScAddress::Contract(Hash(<contract_id_bytes>)),
-///     key: <ScVal>,
-///     durability: ContractDataDurability::Persistent | Instance,
-/// }
-/// ```
-///
-/// For the simple scalar keys used by router contracts (e.g. `DataKey::TotalRouted`,
-/// `DataKey::Paused`) the `key` ScVal is a `ScVal::LedgerKeyContractInstance`
-/// for instance storage.
-///
-/// Full XDR construction is left as an integration point; the collector uses
-/// the simulation path as a fallback.
-#[allow(dead_code)]
-pub fn instance_storage_key_xdr(_contract_id: &str) -> Result<String> {
-    Err(anyhow!(
-        "Direct XDR key construction not implemented. \
-         Use the simulation path or integrate stellar-xdr."
-    ))
-}
-
 // ── RpcClient trait ───────────────────────────────────────────────────────────
 
 /// Trait abstracting the Soroban RPC calls used by the collector.

@@ -159,7 +159,7 @@ pub struct RouteScore {
 ///
 /// Stored under [`DataKey::ScoringWeights`] and set by an admin via
 /// [`RouterCore::set_scoring_weights`].  When no weights have been configured
-/// the system falls back to `DEFAULT_SCORING_WEIGHTS`.
+/// the system falls back to [`DEFAULT_SCORING_WEIGHTS`].
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScoringWeights {
@@ -170,6 +170,16 @@ pub struct ScoringWeights {
     /// Divisor applied to `fee_bps` (must be > 0). Default: 10.
     pub fee_divisor: i64,
 }
+
+/// Default scoring weights used when none have been explicitly configured via
+/// [`RouterCore::set_scoring_weights`].
+///
+/// Values: `liquidity_weight = 1`, `reliability_weight = 1`, `fee_divisor = 10`.
+pub const DEFAULT_SCORING_WEIGHTS: ScoringWeights = ScoringWeights {
+    liquidity_weight: 1,
+    reliability_weight: 1,
+    fee_divisor: 10,
+};
 
 /// Resolution-specific errors returned by [`RouterCore::batch_resolve`].
 ///
@@ -2395,11 +2405,7 @@ impl RouterCore {
         env.storage()
             .instance()
             .get::<DataKey, ScoringWeights>(&DataKey::ScoringWeights)
-            .unwrap_or(ScoringWeights {
-                liquidity_weight: 1,
-                reliability_weight: 1,
-                fee_divisor: 10,
-            })
+            .unwrap_or(DEFAULT_SCORING_WEIGHTS)
     }
 
     /// Validates a route name for use in register_route and add_alias.
