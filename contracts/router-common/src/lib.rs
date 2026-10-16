@@ -11,9 +11,10 @@
 //!
 //! ## Storage Helpers
 //!
-//! Shared instance-storage patterns are consolidated to remove per-contract boilerplate:
-//! - [`CommonDataKey`] — shared `Admin` storage key
 //! - [`extend_instance_ttl`] — instance-storage TTL extension wrapper
+//! - [`CommonDataKey`] — `Admin` storage key used only by this crate's own macro
+//!   tests. Deployed contracts do not use it: each contract keeps its own
+//!   `DataKey::Admin` for storage compatibility.
 //!
 //! ## Batch Result Types
 //! - [`BatchResult`] / [`BatchCallResult`] — standardized per-index success/failure tracking for batch operations
@@ -807,11 +808,12 @@ macro_rules! admin_transfer_complete {
 
 // ── Shared storage keys & helpers ───────────────────────────────────────────────
 
-/// Shared storage key for the admin address.
+/// Storage key for an admin address, used by this crate's own macro tests.
 ///
-/// Each contract still owns its contract-specific `DataKey` enum, but the common
-/// `Admin` key is consolidated here so the admin get/set/initialization helpers
-/// below can be reused without redefining the variant in every contract.
+/// No deployed contract uses this key. Every contract stores its admin under its
+/// own `DataKey::Admin`, and must keep doing so: switching a contract to
+/// `CommonDataKey::Admin` would change the storage key and break reads of an
+/// admin that is already stored on-chain.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum CommonDataKey {

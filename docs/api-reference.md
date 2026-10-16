@@ -51,7 +51,12 @@ different things depending on which contract returned it.
 | `RoleNotFound` | 5 | `revoke_role` targets an address without that direct role grant. | Check `has_role` or role member lists before revoking. |
 | `Blacklisted` | 6 | A blacklisted address is granted or checked for role access. | Unblacklist the address before granting roles. |
 | `CannotBlacklistAdmin` | 7 | The caller tries to blacklist the super-admin address. | Transfer super-admin first, or choose another target. |
-| `HierarchyCycle` | 8 | Setting a role admin would create a parent-role cycle. | Pick a role-admin hierarchy that does not point back to itself. |
+| `DestinationAlreadyHasRole` | 8 | `transfer_role_membership` targets a destination that already holds the role actively. | Revoke the destination's role first, or skip the transfer. |
+| `HierarchyCycle` | 9 | `set_role_parent` would create a parent-role cycle. | Pick a parent role whose ancestor chain does not lead back to the role. |
+| `InvalidExpiry` | 10 | `expires_in` added to the current ledger timestamp overflows `u64` when granting a role. | Use a smaller `expires_in`, or `None` for a non-expiring grant. |
+| `HierarchyTooDeep` | 11 | `set_role_parent` would make the parent chain exceed the maximum hierarchy depth. | Flatten the role hierarchy. |
+| `MaxRolesExceeded` | 12 | A new role name would exceed the configured `max_roles` cap. | Reuse an existing role or raise the cap via `set_role_limits`. |
+| `MaxGrantsPerRoleExceeded` | 13 | Granting a role to a new address would exceed the configured `max_grants_per_role` cap. | Revoke unused grants or raise the cap via `set_role_limits`. |
 
 ### router-middleware `MiddlewareError`
 
@@ -861,7 +866,12 @@ Each contract defines its own `#[contracterror]` enum. Use the tables below as t
 | `RoleNotFound` | `5` | Revoking/removing role that is not present | Confirm membership before revoke, or treat as already removed |
 | `Blacklisted` | `6` | Target/caller is blacklisted for role-management operation | Unblacklist or use a non-blacklisted account |
 | `CannotBlacklistAdmin` | `7` | Attempt to blacklist current super-admin | Transfer super-admin first (if needed), then blacklist old admin |
-| `HierarchyCycle` | `8` | Setting role parent would create cycle | Redesign role graph to remain acyclic |
+| `DestinationAlreadyHasRole` | `8` | `transfer_role_membership` destination already holds the role | Revoke from destination first, or skip the transfer |
+| `HierarchyCycle` | `9` | `set_role_parent` would create a cycle | Redesign role graph to remain acyclic |
+| `InvalidExpiry` | `10` | `expires_in` overflows when added to the ledger timestamp | Use a smaller `expires_in` or `None` |
+| `HierarchyTooDeep` | `11` | `set_role_parent` would exceed the maximum hierarchy depth | Flatten the role hierarchy |
+| `MaxRolesExceeded` | `12` | A new role name would exceed the `max_roles` cap | Reuse an existing role or raise the cap via `set_role_limits` |
+| `MaxGrantsPerRoleExceeded` | `13` | A new grant would exceed the `max_grants_per_role` cap | Revoke unused grants or raise the cap via `set_role_limits` |
 
 ### router-middleware (`MiddlewareError`)
 
