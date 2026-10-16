@@ -139,9 +139,13 @@ read-only or fire-and-forget and do not hold signing keys in production.
 ### 7. Blacklist Bypass
 
 **What can an attacker do?**
-- A blacklisted address can still call contracts directly — the blacklist only
-  prevents role grants in router-access. It does not prevent direct contract
-  calls.
+- A blacklisted address can still call contracts directly. Inside
+  router-access, blacklisting suspends every role the address holds, both
+  direct and inherited (`has_role` returns `false` regardless of hierarchy),
+  blocks new role grants to it, and removes its role-admin and super-admin
+  authority (a blacklisted caller cannot grant or revoke roles, and cannot be
+  made a role admin or the new super admin). It does not stop the address from
+  calling other contracts that do not check its roles through router-access.
 
 **Mitigations**
 - The blacklist in router-access is a role-management control, not a firewall.
