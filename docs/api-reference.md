@@ -63,8 +63,9 @@ different things depending on which contract returned it.
 | `RateLimitExceeded` | 4 | A caller has used all allowed calls for the route's current window. | Retry after the window resets or raise the configured limit. |
 | `RouteDisabled` | 5 | `pre_call` runs against a route whose middleware config is disabled. | Enable the route or bypass it intentionally. |
 | `MiddlewareDisabled` | 6 | Global middleware enforcement is disabled. | Re-enable middleware or treat the route as temporarily unavailable. |
-| `InvalidConfig` | 7 | Rate limiting is enabled with `max_calls_per_window > 0` but `window_seconds == 0`. | Set a positive window or set `max_calls_per_window` to `0` for unlimited calls. |
+| `InvalidConfig` | 7 | `configure_route` is called with `max_calls_per_window > 0` but `window_seconds == 0`, or with `log_retention > 10000`; or `configure_caller_rate_limit` is called with `max_calls > 0` but `window_secs == 0`. | Set a positive window (or `0` max calls for unlimited), and keep `log_retention` at or below `10000`. |
 | `CircuitOpen` | 8 | The route's circuit breaker is open after repeated failures. | Wait for the recovery window, reset the breaker, or fix the failing downstream route. |
+| `Reentrancy` | 9 | A `pre_call` for the same route is already in progress, or the route's execution guard was left set. | An admin calls `reset_guard(route)` to clear the guard. |
 
 ### router-timelock `TimelockError`
 
@@ -468,7 +469,7 @@ stellar contract invoke --id <MIDDLEWARE_ID> --network testnet --source admin \
 ### `pre_call(caller, route) → Result<(), MiddlewareError>`
 Must be called before routing. Validates global enable, route enable, circuit breaker, and rate limit. Increments `total_calls` on success.
 
-**Errors:** `MiddlewareDisabled`, `RouteDisabled`, `CircuitOpen`, `RateLimitExceeded`
+**Errors:** `MiddlewareDisabled`, `RouteDisabled`, `CircuitOpen`, `RateLimitExceeded`, `Reentrancy`
 
 ---
 
