@@ -167,13 +167,13 @@ impl DeployedContract {
         })
     }
 
-    /// Invoke a contract method.
-    pub fn invoke(
+    /// Build and run a `stellar contract invoke` command, returning the raw process output.
+    fn run_invoke(
         &self,
         method: &str,
         args: &[&str],
         source_account: &TestAccount,
-    ) -> Result<String, String> {
+    ) -> Result<std::process::Output, String> {
         let mut cmd_args = vec![
             "contract",
             "invoke",
@@ -188,10 +188,20 @@ impl DeployedContract {
         ];
         cmd_args.extend_from_slice(args);
 
-        let output = Command::new("stellar")
+        Command::new("stellar")
             .args(&cmd_args)
             .output()
-            .map_err(|e| format!("Failed to invoke contract: {}", e))?;
+            .map_err(|e| format!("Failed to invoke contract: {}", e))
+    }
+
+    /// Invoke a contract method.
+    pub fn invoke(
+        &self,
+        method: &str,
+        args: &[&str],
+        source_account: &TestAccount,
+    ) -> Result<String, String> {
+        let output = self.run_invoke(method, args, source_account)?;
 
         if !output.status.success() {
             return Err(format!(
@@ -210,24 +220,7 @@ impl DeployedContract {
         args: &[&str],
         source_account: &TestAccount,
     ) -> Result<String, String> {
-        let mut cmd_args = vec![
-            "contract",
-            "invoke",
-            "--id",
-            &self.contract_id,
-            "--network",
-            &self.network,
-            "--source",
-            &source_account.name,
-            "--",
-            method,
-        ];
-        cmd_args.extend_from_slice(args);
-
-        let output = Command::new("stellar")
-            .args(&cmd_args)
-            .output()
-            .map_err(|e| format!("Failed to invoke contract: {}", e))?;
+        let output = self.run_invoke(method, args, source_account)?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();

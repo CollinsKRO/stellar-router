@@ -35,11 +35,7 @@ pub fn recompute_best_route(env: &Env) {
         .storage()
         .instance()
         .get::<DataKey, ScoringWeights>(&DataKey::ScoringWeights)
-        .unwrap_or(ScoringWeights {
-            liquidity_weight: 1,
-            reliability_weight: 1,
-            fee_divisor: 10,
-        });
+        .unwrap_or(crate::DEFAULT_SCORING_WEIGHTS);
 
     for name in names.iter() {
         // Skip missing, paused, or expired routes

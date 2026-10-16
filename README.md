@@ -377,7 +377,7 @@ Fund your testnet account using [Stellar Friendbot](https://friendbot.stellar.or
 **Metrics exporter shows no data**
 - Verify the contract IDs are correct and the contracts are initialized.
 - Check that `ROUTER_RPC_URL` points to a live Soroban RPC endpoint.
-- Run `docker compose logs metrics-exporter` to see scrape errors.
+- Run `docker compose logs router-metrics-exporter` to see scrape errors.
 
 **Tests fail with "AlreadyInitialized"**
 Each test must use a fresh `Env::default()` and register a new contract instance. The Soroban test environment is isolated per `Env`, so this should not happen unless a test helper is reusing state.

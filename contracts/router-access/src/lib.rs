@@ -323,14 +323,12 @@ impl RouterAccess {
     /// Blacklist an address.
     pub fn blacklist(env: Env, caller: Address, target: Address) -> Result<(), AccessError> {
         caller.require_auth();
+        // require_super_admin already verified that DataKey::SuperAdmin exists
+        // and equals `caller`, so at this point caller == super_admin is
+        // guaranteed — no second storage read needed.
         Self::require_super_admin(&env, &caller)?;
 
-        let super_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::SuperAdmin)
-            .ok_or(AccessError::NotInitialized)?;
-        if target == super_admin {
+        if target == caller {
             return Err(AccessError::CannotBlacklistAdmin);
         }
 
@@ -1908,6 +1906,19 @@ mod tests {
         // After un-blacklisting it goes back to false
         client.unblacklist(&admin, &addr);
         assert!(!client.is_blacklisted(&addr));
+    }
+
+    // ── Issue #1516: blacklist(admin, admin) must return CannotBlacklistAdmin ─
+
+    #[test]
+    fn test_blacklist_super_admin_returns_cannot_blacklist_admin() {
+        // Caller is the super-admin; attempting to blacklist themselves must
+        // fail with CannotBlacklistAdmin.  require_super_admin() already proves
+        // caller == super_admin before this check runs, so only one storage
+        // read of DataKey::SuperAdmin occurs per blacklist() invocation.
+        let (env, admin, client) = setup();
+        let result = client.try_blacklist(&admin, &admin);
+        assert_eq!(result, Err(Ok(AccessError::CannotBlacklistAdmin)));
     }
 
     // ── Issue #1051: transfer_role_membership coverage ──────────────────────
