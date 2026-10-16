@@ -85,14 +85,18 @@ Keep PRs focused. One logical change per PR makes review faster and reverts easi
 ### Unit tests (all contracts + off-chain crates)
 
 ```bash
-cargo test
+make test-all
 ```
+
+`make test-all` runs the root contract workspace and the off-chain `metrics/`
+and `api-server/` manifests.
 
 ### Single crate
 
 ```bash
 cargo test -p router-quote
-cargo test -p router-metrics-exporter
+cargo test --manifest-path metrics/Cargo.toml
+cargo test --manifest-path api-server/Cargo.toml
 ```
 
 ### Integration tests (requires Stellar testnet access)
@@ -102,10 +106,20 @@ cargo test -p router-metrics-exporter
 ./scripts/run-integration-tests.sh
 
 # Or manually
-cargo test --test integration_tests -- --ignored --test-threads=1 --nocapture
+cargo test --manifest-path integration-tests/Cargo.toml --test integration_tests -- --ignored --test-threads=1 --nocapture
 ```
 
 See [integration-tests/tests/README.md](integration-tests/tests/README.md) for full details.
+
+### Formatting and linting
+
+```bash
+make fmt-check
+make lint
+```
+
+These targets check formatting and run Clippy for the root workspace plus the
+`metrics/` and `api-server/` manifests.
 
 ### Build WASM artifacts
 
@@ -115,8 +129,8 @@ cargo build --target wasm32-unknown-unknown --release
 
 ## Code Style
 
-- Run `cargo fmt` before committing.
-- Run `cargo clippy -- -D warnings` and fix any warnings.
+- Run `make fmt-check` before committing.
+- Run `make lint` and fix any warnings.
 - Match the style and conventions of the surrounding code.
 - Add doc comments (`///`) to all public items.
 - Follow the event naming convention in [`contracts/router-common/EVENT_NAMING_CONVENTION.md`](contracts/router-common/EVENT_NAMING_CONVENTION.md).

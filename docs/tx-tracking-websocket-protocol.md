@@ -21,7 +21,8 @@ Endpoint: `GET /ws`
 
 ## Message envelope format
 
-All messages sent by the server use the following JSON envelope:
+Application messages sent by the server use the following JSON envelope
+(the connection-limit rejection is the raw JSON exception described below):
 
 ```json
 {
@@ -74,6 +75,7 @@ Client sends:
 ```
 
 Unsubscription removes the tx_id subscription from the local list and calls `state.remove_subscriber`.
+The server does not send an acknowledgement for an unsubscribe request.
 
 ### WebSocket disconnect behavior
 
@@ -140,6 +142,23 @@ The server forwards it as-is.
 - If present: a string.
 - If absent: `null` (because the server includes `event.message` directly in the JSON payload).
 
+### `error`
+
+Sent when the request cannot be accepted. Currently, the server sends this
+message when the connection has reached the subscription limit:
+
+```json
+{
+  "msg_type": "error",
+  "data": {
+    "message": "subscription limit reached"
+  }
+}
+```
+
+The client should treat an `error` message as a failed request and must not
+assume that the requested subscription was added.
+
 ---
 
 ## Client example
@@ -169,6 +188,16 @@ ws.onmessage = (ev) => {
 - The server uses an internal `broadcast::Sender<TransactionStatusEvent>`.
 - Subscription matching is by exact string match on `tx_id`.
 - There is no explicit ordering guarantee across multiple tx_id subscriptions on a single connection beyond what the underlying broadcast channel provides.
+- The server sends a WebSocket `Ping` every 30 seconds (`PING_INTERVAL`).
+- The server updates its activity timer when it receives a text message or a
+  `Pong`. If no text message or `Pong` is received for 60 seconds
+  (`IDLE_TIMEOUT`), the server closes the connection.
+- At most 100 WebSocket connections (`MAX_WS_CONNECTIONS`) are accepted. When
+  the limit is reached, the server sends `{"error":"connection limit reached"}`
+  and closes the new connection.
+- Each connection may have at most 100 subscriptions
+  (`MAX_SUBSCRIPTIONS_PER_CONNECTION`). A subscribe request beyond that limit
+  receives the `error` message described above.
 
 ---
 
@@ -177,5 +206,3 @@ ws.onmessage = (ev) => {
 - No batching protocol for subscribe/unsubscribe.
 - No authentication or authorization in the WebSocket layer (none is implemented in this code path).
 - No server-side validation of tx_id format.
-- No ping/pong keepalive semantics defined by this protocol (use WebSocket defaults).
-
