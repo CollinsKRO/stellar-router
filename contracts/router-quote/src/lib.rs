@@ -697,12 +697,7 @@ impl RouterQuote {
         current.require_auth();
         router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         router_common::require_admin_simple!(&env, &current, &DataKey::Admin, QuoteError)?;
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
-
-        env.events().publish(
-            (Symbol::new(&env, router_common::EVENT_ADMIN_TRANSFERRED),),
-            (current, new_admin),
-        );
+        router_common::admin_transfer_complete!(&env, &current, &new_admin, &DataKey::Admin);
 
         Ok(())
     }

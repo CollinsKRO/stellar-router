@@ -1058,32 +1058,11 @@ impl RouterRegistry {
             ConstraintOperator::Lte => version <= base,
             ConstraintOperator::Gt => version > base,
             ConstraintOperator::Lt => version < base,
-            ConstraintOperator::Caret => {
-                // Versions are flat integers, so `^X` reduces to
-                // `version >= X && version < X + 1`, which for integers only
-                // ever matches `version == X` — equivalent to exact match.
-                // Guard the increment so `base == u32::MAX` cannot overflow
-                // when forming the exclusive upper bound.
-                if base == 0 {
-                    version >= base && version < 1
-                } else if base == u32::MAX {
-                    version == u32::MAX
-                } else {
-                    version >= base && version < base + 1
-                }
+            // Versions are flat integers, so caret and tilde both reduce to an
+            // exact match (see the `ConstraintOperator` doc).
+            ConstraintOperator::Caret | ConstraintOperator::Tilde | ConstraintOperator::Exact => {
+                version == base
             }
-            ConstraintOperator::Tilde => {
-                // As with caret, `~X` would mean patch-level changes in a
-                // `major.minor.patch` scheme, but versions are flat integers
-                // here, so it is likewise equivalent to an exact match on `X`.
-                // Guard the increment so `base == u32::MAX` cannot overflow.
-                if base == u32::MAX {
-                    version == u32::MAX
-                } else {
-                    version >= base && version < base + 1
-                }
-            }
-            ConstraintOperator::Exact => version == base,
         })
     }
 }

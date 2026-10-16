@@ -1246,15 +1246,8 @@ impl RouterMiddleware {
         // long before their real window elapsed.
         let mut stale_callers: Vec<Address> = Vec::new(env);
         for (caller, state) in rate_limits.iter() {
-            let effective_window = env
-                .storage()
-                .instance()
-                .get::<DataKey, CallerRateLimitConfig>(&DataKey::CallerRateLimit(
-                    route.clone(),
-                    caller.clone(),
-                ))
-                .map(|c| c.window_secs)
-                .unwrap_or(base_window_seconds);
+            let effective_window =
+                rate_limit::resolve_effective_window(env, route, &caller, base_window_seconds);
             let stale_after = effective_window
                 .saturating_mul(RATE_LIMIT_STALE_WINDOW_MULTIPLIER)
                 .max(1);

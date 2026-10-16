@@ -36,8 +36,8 @@ pub struct RateLimitCheck {
 /// Returns the caller's `CallerRateLimitConfig.window_secs` when a per-caller
 /// override is stored for `(route, caller)`, otherwise falls back to
 /// `base_window_seconds` from the route-level config.  This is the single
-/// source of truth used by `pre_call`, `rate_limit_state`, and
-/// `get_route_rate_limit_stats` so window-elapsed arithmetic is never
+/// source of truth used by `pre_call`, `rate_limit_state`,
+/// `get_route_rate_limit_stats`, and `prune_stale_rate_limits` so window-elapsed arithmetic is never
 /// duplicated across call sites. (Issue #1317)
 pub fn resolve_effective_window(
     env: &Env,
