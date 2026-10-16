@@ -83,7 +83,16 @@ different things depending on which contract returned it.
 | `NotReady` | 5 | `execute` is called before the queued operation's ETA. | Wait until the ETA has passed. |
 | `AlreadyExecuted` | 6 | `execute` or `cancel` targets an operation that has already executed. | Treat it as complete and avoid replaying the operation. |
 | `Cancelled` | 7 | `execute` or `cancel` targets an operation that has been cancelled. | Queue a new operation if the action is still needed. |
-| `DelayTooShort` | 8 | `queue` uses a delay lower than the configured minimum delay. | Use at least `min_delay()` seconds. |
+| `DelayTooShort` | 8 | `queue` uses a delay lower than the configured minimum delay, or `initialize` / `set_min_delay` is given a minimum delay of zero. | Use at least `min_delay()` seconds; pass a non-zero minimum delay. |
+| `Expired` | 9 | The grace period has elapsed; the operation can no longer be executed. | Queue a new operation if the action is still needed. |
+| `QueueFull` | 10 | The maximum number of pending operations has been reached. | Execute, cancel, or clean up pending operations before queueing more. |
+| `CircularDependency` | 11 | A dependency references itself or creates a cycle. | Remove the self-referencing or cyclic dependency. |
+| `DependencyTooDeep` | 12 | Dependency chain exceeds maximum allowed depth. | Flatten the dependency chain. |
+| `AlreadyQueued` | 13 | An operation with this exact (description, target, eta) already exists. | Change the description, target, or delay, or use the existing operation. |
+| `DependencyNotExecuted` | 14 | A dependency of this operation has not yet been executed. | Execute the dependencies first, then retry. |
+| `GracePeriodTooLong` | 15 | `grace_period_seconds` exceeds `MAX_GRACE_PERIOD_SECONDS`. | Use a shorter grace period. |
+| `ExpiryOverflow` | 16 | `eta + grace_period_seconds` overflows `u64`. | Should not occur after the `GracePeriodTooLong` guard; queue a new operation. |
+| `DelayTooLong` | 17 | `ledger_timestamp + delay` overflows `u64`. | Use a smaller delay. |
 
 ### router-multicall `MulticallError`
 
@@ -268,14 +277,14 @@ Returns the entry for `(name, version)`.
 ### `get_latest(name) → Result<ContractEntry, RegistryError>`
 Returns the highest non-deprecated version for `name`.
 
-**Errors:** `NotFound`
+**Errors:** `NotFound` (no versions registered for `name`), `AllVersionsDeprecated` (every version of `name` is deprecated)
 
 ---
 
 ### `get_latest_with_constraint(name, constraint: Option<String>) → Result<ContractEntry, RegistryError>`
 Returns the highest non-deprecated version matching a semver constraint (`>=X`, `<=X`, `>X`, `<X`, `^X`, `~X`, or exact).
 
-**Errors:** `NotFound`, `InvalidConstraint`
+**Errors:** `NotFound`, `AllVersionsDeprecated`, `InvalidConstraint`
 
 ---
 
@@ -897,7 +906,16 @@ Each contract defines its own `#[contracterror]` enum. Use the tables below as t
 | `NotReady` | `5` | `execute` called before operation ETA | Wait until ETA then retry |
 | `AlreadyExecuted` | `6` | Execute/cancel attempted on operation already executed | Treat as terminal completed state |
 | `Cancelled` | `7` | Execute/cancel attempted on already-cancelled operation | Treat as terminal cancelled state |
-| `DelayTooShort` | `8` | Queue delay is below configured `min_delay` | Submit with `delay >= min_delay` |
+| `DelayTooShort` | `8` | Queue delay is below configured `min_delay`, or `initialize` / `set_min_delay` is given a zero minimum delay | Submit with `delay >= min_delay`; use a non-zero minimum delay |
+| `Expired` | `9` | The grace period has elapsed; the operation can no longer be executed | Queue a new operation if still needed |
+| `QueueFull` | `10` | The maximum number of pending operations has been reached | Execute, cancel, or clean up pending operations first |
+| `CircularDependency` | `11` | A dependency references itself or creates a cycle | Remove the cyclic dependency |
+| `DependencyTooDeep` | `12` | Dependency chain exceeds maximum allowed depth | Flatten the dependency chain |
+| `AlreadyQueued` | `13` | An operation with this exact (description, target, eta) already exists | Change description/target/delay or use the existing op |
+| `DependencyNotExecuted` | `14` | A dependency of this operation has not yet been executed | Execute dependencies first, then retry |
+| `GracePeriodTooLong` | `15` | `grace_period_seconds` exceeds `MAX_GRACE_PERIOD_SECONDS` | Use a shorter grace period |
+| `ExpiryOverflow` | `16` | `eta + grace_period_seconds` overflows `u64` | Should not occur after the `GracePeriodTooLong` guard; queue a new op |
+| `DelayTooLong` | `17` | `ledger_timestamp + delay` overflows `u64` | Use a smaller delay |
 
 ### router-multicall (`MulticallError`)
 

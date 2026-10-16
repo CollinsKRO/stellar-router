@@ -413,7 +413,9 @@ impl RouterRegistry {
     /// The most recent non-deprecated [`ContractEntry`] for `name`.
     ///
     /// # Errors
-    /// * [`RegistryError::NotFound`] — if no non-deprecated entry exists for `name`.
+    /// * [`RegistryError::NotFound`] — if `name` has no registered versions.
+    /// * [`RegistryError::AllVersionsDeprecated`] — if `name` has registered
+    ///   versions but every one of them is deprecated.
     pub fn get_latest(env: Env, name: String) -> Result<ContractEntry, RegistryError> {
         router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         let versions = Self::get_versions_list(&env, &name);
@@ -1204,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_latest_returns_not_found_when_all_deprecated() {
+    fn test_get_latest_returns_all_versions_deprecated_when_all_deprecated() {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
         let addr = Address::generate(&env);

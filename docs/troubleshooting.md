@@ -41,6 +41,18 @@ stellar contract invoke --id <CONTRACT_ID> --network testnet --source admin \
   -- initialize --admin <ADMIN_ADDRESS>
 ```
 
+That is the full signature for `router-registry` and `router-middleware`. The other
+contracts take different or additional arguments:
+
+| Contract | `initialize` arguments |
+|---|---|
+| router-access | `--super_admin <ADMIN_ADDRESS>` |
+| router-core | `--admin <ADMIN_ADDRESS>` (optional `--max_routes <N>`) |
+| router-execution | `--admin <ADMIN_ADDRESS> --max_retries <N> --backoff_base_ms <MS> --backoff_multiplier <N>` |
+| router-multicall | `--admin <ADMIN_ADDRESS> --max_batch_size <N>` |
+| router-quote | `--admin <ADMIN_ADDRESS> --default_fee_bps <BPS>` |
+| router-timelock | `--admin <ADMIN_ADDRESS> --min_delay <SECONDS> --max_pending_ops <N>` |
+
 Each contract in the suite requires its own `initialize` call. Deploy and initialize
 them in dependency order (see [`docs/deployment.md`](deployment.md)).
 
@@ -66,11 +78,18 @@ expected — it is a guard against accidental re-initialization.
    the required role. Grant it first:
    ```bash
    stellar contract invoke --id <ACCESS_ID> --network testnet --source admin \
-     -- grant_role --caller <ADMIN> --role operator --address <CALLER>
+     -- grant_role --admin <ADMIN> --account <CALLER> --role operator
    ```
 
-3. Address is blacklisted — check with `has_role` and remove the blacklist entry
-   if needed.
+3. Address is blacklisted — check with `is_blacklisted` and remove the blacklist
+   entry with `unblacklist` if needed:
+   ```bash
+   stellar contract invoke --id <ACCESS_ID> --network testnet --source admin \
+     -- is_blacklisted --target <CALLER>
+
+   stellar contract invoke --id <ACCESS_ID> --network testnet --source admin \
+     -- unblacklist --caller <ADMIN> --target <CALLER>
+   ```
 
 4. Timelock not yet ready — operations queued in `router-timelock` cannot be
    executed before their ETA. Check the operation status and wait for the delay

@@ -8,7 +8,6 @@ Use this document to avoid collisions when adding new error variants.
 | Code | Contracts / Variants |
 |------|---------------------|
 | 10   | `RouterError::CircularDependency` and `RouterError::InvalidScore` (router-core) |
-| 10   | `TimelockError::QueueFull` and `TimelockError::CircularDependency` (router-timelock) |
 
 > These collisions exist in the current codebase and are tracked here for visibility.
 > See the per-contract tables below for authoritative values. New variants **must not**
@@ -51,10 +50,15 @@ Use this document to avoid collisions when adding new error variants.
 | 7    | `Cancelled` |
 | 8    | `DelayTooShort` |
 | 9    | `Expired` |
-| 10   | `QueueFull` ⚠️ collision with `CircularDependency` |
-| 10   | `CircularDependency` ⚠️ collision with `QueueFull` |
-| 11   | `DependencyTooDeep` |
-| **12** | ← next available |
+| 10   | `QueueFull` |
+| 11   | `CircularDependency` |
+| 12   | `DependencyTooDeep` |
+| 13   | `AlreadyQueued` |
+| 14   | `DependencyNotExecuted` |
+| 15   | `GracePeriodTooLong` |
+| 16   | `ExpiryOverflow` |
+| 17   | `DelayTooLong` |
+| **18** | ← next available |
 
 ---
 
