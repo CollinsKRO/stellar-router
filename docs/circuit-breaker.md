@@ -20,9 +20,10 @@ calls when a failure threshold is reached.
      │ success resets                       ┌────▼──────┐          │ recovery_window_seconds
      │ failure_count to 0                   │ Half-Open │          │ elapsed since opened_at
      │                                      │           │◄─────────┘
-     │                                      │ One probe │
-     │                                      │ call let  │
+     │                                      │ Calls let │
      │                                      │ through   │
+     │                                      │ until next│
+     │                                      │ post_call │
      │                                      └─────┬─────┘
      │                                            │
      │                                            │ failure (probe)
@@ -61,7 +62,7 @@ Timing uses `env.ledger().timestamp()` (UNIX seconds from the Soroban ledger).
 | `failure_count` | `u32`  | Failures accumulated in the current Closed window        |
 | `opened_at`     | `u64`  | Ledger timestamp when the circuit was last opened        |
 | `is_open`       | `bool` | True when the circuit is Open (calls blocked)            |
-| `is_half_open`  | `bool` | True when the circuit is Half-Open (one probe allowed)   |
+| `is_half_open`  | `bool` | True when the circuit is Half-Open (calls allowed until the next `post_call` result closes or re-opens it) |
 
 ## Code Location
 
@@ -112,9 +113,15 @@ stellar contract invoke --id <MIDDLEWARE_ID> --network testnet --source admin \
 | Event name       | Emitted when                                 | Payload                          |
 |------------------|----------------------------------------------|----------------------------------|
 | `circuit_opened` | Circuit transitions to Open (from Closed or Half-Open) | `(route_name, failure_count)` |
+| `circuit_closed` | A successful `post_call` closes a Half-Open circuit | `route_name` |
 
-No event is emitted on Close or Half-Open transitions; monitor `post_call` logs
-for those signals.
+No event is emitted on the Open → Half-Open transition; monitor `post_call`
+logs for that signal.
+
+> **Note:** Half-Open does not limit traffic to a single probe. While the
+> circuit is Half-Open, `pre_call` admits every caller until the next
+> `post_call` result either closes the circuit (success) or re-opens it
+> (failure).
 
 ## Manual Reset
 

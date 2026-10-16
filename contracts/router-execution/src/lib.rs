@@ -7,7 +7,9 @@
 //!
 //! ## Features
 //! - Structured error hierarchy: network, simulation, and contract error categories
-//! - Pre-execution simulation that blocks execution on failure
+//! - Pre-execution simulation that blocks execution on failure (note: the
+//!   simulation is a real invocation of the target, so a successful call's
+//!   state changes persist)
 //! - Retry logic for transient (network) failures
 //! - Centralized error event logging
 //! - Fee estimation endpoint with edge-case handling
@@ -621,11 +623,19 @@ impl RouterExecution {
         })
     }
 
-    /// Simulate a transaction without executing it.
+    /// Invoke the target function and report whether the call succeeded.
     ///
-    /// Runs a dry-run invocation via `try_invoke_contract` and returns a
-    /// [`SimulationResult`] describing whether the transaction would succeed.
-    /// The real execution is never performed — this is purely a validation step.
+    /// Despite its name, this is **not** a side-effect-free preview: it calls
+    /// the target for real via `try_invoke_contract` (through `dry_run_invoke`)
+    /// and returns a [`SimulationResult`] describing whether that call
+    /// succeeded. Soroban offers no contract-level "preview" mechanism, so when
+    /// the target call succeeds, any state changes it makes **persist**,
+    /// exactly as they would for `execute()` (see the Issue #1194 comment in
+    /// `execute()`).
+    ///
+    /// Only call `simulate()` against read-only target functions. Calling it
+    /// against a state-changing function (e.g. a transfer or swap) will
+    /// perform that state change.
     ///
     /// Simulation results are logged via a `simulation_result` event so
     /// off-chain observers can track validation outcomes.

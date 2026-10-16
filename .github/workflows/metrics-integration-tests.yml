@@ -63,39 +63,48 @@ jobs:
           if echo "$BODY" | grep -q "^# HELP"; then
             echo "✅ Prometheus format detected (HELP lines present)"
           else
-            echo "⚠️  No HELP lines found in metrics output"
+            echo "❌ No HELP lines found in metrics output"
+            exit 1
           fi
           
           if echo "$BODY" | grep -q "^# TYPE"; then
             echo "✅ Prometheus TYPE lines present"
           else
-            echo "⚠️  No TYPE lines found in metrics output"
+            echo "❌ No TYPE lines found in metrics output"
+            exit 1
           fi
 
       - name: Validate expected metrics
         run: |
           METRICS_OUTPUT=$(curl -s http://localhost:9090/metrics)
           
+          # Only metrics that are always present without configured contracts.
+          # Labelled (*Vec) metrics in metrics/src/metrics.rs are emitted only
+          # after a contract has been scraped, so they cannot be required here.
           EXPECTED_METRICS=(
-            "router_core_routes_total"
-            "router_core_resolutions_total"
-            "router_middleware_rate_limit_hits_total"
-            "router_registry_entries_total"
+            "router_up"
           )
           
           MISSING_METRICS=0
           for metric in "${EXPECTED_METRICS[@]}"; do
-            if echo "$METRICS_OUTPUT" | grep -q "$metric"; then
-              echo "✅ Found metric: $metric"
-            else
-              echo "⚠️  Missing metric: $metric (expected but not found)"
+            if ! echo "$METRICS_OUTPUT" | grep -qE "^${metric}(\{| )"; then
+              echo "❌ Missing metric sample: $metric"
               MISSING_METRICS=$((MISSING_METRICS + 1))
+            elif ! echo "$METRICS_OUTPUT" | grep -q "^# HELP ${metric} "; then
+              echo "❌ Missing HELP line for metric: $metric"
+              MISSING_METRICS=$((MISSING_METRICS + 1))
+            elif ! echo "$METRICS_OUTPUT" | grep -q "^# TYPE ${metric} "; then
+              echo "❌ Missing TYPE line for metric: $metric"
+              MISSING_METRICS=$((MISSING_METRICS + 1))
+            else
+              echo "✅ Found metric: $metric"
             fi
           done
           
           if [ $MISSING_METRICS -gt 0 ]; then
             echo ""
-            echo "Note: Some expected metrics were not found. This may be expected if contracts are not initialized."
+            echo "❌ $MISSING_METRICS expected metric(s) missing from exporter output"
+            exit 1
           fi
 
       - name: Test metrics scrape performance
