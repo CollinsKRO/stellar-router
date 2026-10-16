@@ -29,7 +29,7 @@ Most contracts share these foundational error codes:
 Beyond the common errors, each contract defines domain-specific error codes:
 
 - **router-access**: Role-based access control errors (4-7)
-- **router-core**: Route management errors (4-14)
+- **router-core**: Route management errors (4-18)
 - **router-registry**: Contract registration and versioning errors (4-11)
 - **router-middleware**: Rate limiting and circuit breaker errors (4-8)
 - **router-execution**: Structured error hierarchy with categories (101-405)
@@ -71,11 +71,11 @@ Core routing logic and route management.
 | Code | Error Name | Meaning | Recovery Action |
 |------|------------|---------|-----------------|
 | 1 | `AlreadyInitialized` | Contract already initialized | No action needed |
-| 2 | `NotInitialized` | Contract not initialized | Call `initialize()` with admin and registry address |
+| 2 | `NotInitialized` | Contract not initialized | Call `initialize()` with admin and max_routes |
 | 3 | `Unauthorized` | Caller lacks permission | Verify caller is the admin |
 | 4 | `RouteNotFound` | Route does not exist | Register the route via `register_route()` |
 | 5 | `RoutePaused` | Route is paused | Unpause via `set_route_paused()` if appropriate |
-| 6 | `RouterPaused` | Router is globally paused | Unpause via `set_router_paused()` if appropriate |
+| 6 | `RouterPaused` | Router is globally paused | Unpause via `set_paused()` if appropriate |
 | 7 | `RouteAlreadyExists` | Route already registered | Use a different route name or remove existing route |
 | 8 | `InvalidRouteName` | Route name is invalid (empty or whitespace) | Provide a non-empty, non-whitespace route name |
 | 9 | `InvalidMetadata` | Metadata is invalid | Check metadata format and constraints |
@@ -84,6 +84,10 @@ Core routing logic and route management.
 | 12 | `InvalidAddress` | Provided address is invalid | Verify the address is a valid Stellar address |
 | 13 | `RouteExpired` | Route has expired | Re-register the route with a new expiry time |
 | 14 | `InvalidScore` | Route score is invalid | Provide a valid score within allowed range |
+| 15 | `InvalidTtlExtension` | TTL extension is zero or invalid | Provide a positive TTL value or extension in ledgers |
+| 16 | `RecursionLimitExceeded` | Route dependency traversal exceeds the recursion limit | Simplify the dependency chain so it stays within the supported depth |
+| 17 | `TooManyRoutes` | The configured route capacity has been reached | Remove an unused route or initialize a new router with a larger `max_routes` |
+| 18 | `InvalidScoringWeights` | Scoring weights are invalid, such as a non-positive fee divisor or out-of-range weight | Provide valid weights within the supported bounds and a positive fee divisor |
 
 ### router-registry
 
@@ -217,10 +221,10 @@ When making cross-contract calls within the stellar-router suite, follow these g
 
 ### Error Message Parsing
 
-Each contract provides an error message helper function that converts error codes to human-readable strings:
+Use contract-provided error-message helpers where available; otherwise map the returned
+error discriminant to the enum name in this guide:
 
 - `router-access`: `access_error_message()`
-- `router-core`: `router_error_message()`
 - `router-registry`: `registry_error_message()`
 - `router-middleware`: (implicit via contract error enum)
 - `router-execution`: (implicit via contract error enum)

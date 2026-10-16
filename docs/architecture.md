@@ -53,13 +53,13 @@ contract addresses by route name. Supports pause controls at both the global and
 per-route level.
 
 **Key functions:**
-- `initialize(admin)` — set the admin and activate the contract.
+- `initialize(admin, max_routes)` — set the admin, route capacity, and activate the contract.
 - `register_route(caller, name, address)` — map a name to a contract address.
 - `resolve(name) → Address` — look up the address for a route name.
-- `pause_route(caller, name)` / `unpause_route(caller, name)` — toggle a route.
-- `pause_all(caller)` / `unpause_all(caller)` — global pause toggle.
+- `set_route_paused(caller, name, paused)` — pause or unpause a route.
+- `set_paused(caller, paused)` — global pause toggle.
 
-**Events emitted:** `route_registered`, `route_resolved`, `route_paused`, `route_unpaused`.
+**Events emitted:** `route_registered`, `routed`, `route_paused` (including the `paused` flag), `router_paused`.
 
 ---
 
@@ -177,7 +177,7 @@ Caller
 router-core
   │  checks: not paused globally, route not paused
   │
-  │  emits: route_resolved
+  │  emits: routed
   │
   └──► returns Address of oracle contract
          │
