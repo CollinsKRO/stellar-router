@@ -33,12 +33,14 @@
 //! - `alias_resolved` ΓÇö Route alias resolved (alias_name, selected_route_name)
 //! - `best_route_selected` ΓÇö Best route selected (route_name, best_score)
 //! - `route_scored` ΓÇö Route score updated (route_name, liquidity_score, fee_bps, reliability_score)
+//! - `max_routes_updated` ΓÇö Max route count limit updated (old_max, new_max)
+//! - `scoring_weights_updated` ΓÇö Scoring weights updated (liquidity_weight, reliability_weight, fee_divisor)
 //! - `admin_transferred` ΓÇö Admin transferred (old_admin, new_admin)
 
 pub mod scoring;
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, Address, Env, Map, String, Symbol, Vec,
 };
 #[cfg(test)]
 extern crate alloc;
@@ -591,6 +593,7 @@ impl RouterCore {
     /// # Errors
     /// * [`RouterError::Unauthorized`] ΓÇö if `caller` is not the admin.
     /// * [`RouterError::RouteNotFound`] ΓÇö if no route with `name` exists.
+    /// * [`RouterError::InvalidAddress`] ΓÇö if `new_address` is the zero address.
     /// * [`RouterError::NotInitialized`] ΓÇö if the contract has not been initialized.
     pub fn update_route(
         env: Env,
@@ -603,6 +606,7 @@ impl RouterCore {
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, RouterError)?;
 
         // Validate address is not the zero address (issue #1278)
+        // Validate address is not the zero address (same guard as register_route)
         if Self::is_zero_address(&env, &new_address) {
             return Err(RouterError::InvalidAddress);
         }
@@ -767,6 +771,11 @@ impl RouterCore {
             for (index, route) in routes.iter().enumerate() {
                 let idx = index as u32;
                 // Detect within-batch duplicates in O(1) via map lookup.
+            // Use a Map for O(1) duplicate-name lookups instead of Vec::contains
+            // which would make this loop O(n²) (issue #1280).
+            let mut seen = Map::new(&env);
+            for (index, route) in routes.iter().enumerate() {
+                let idx = index as u32;
                 if seen.contains_key(route.name.clone()) {
                     result.record_failure(idx, router_common::BatchItemError::AlreadyExists);
                     return Ok(result);
@@ -775,6 +784,10 @@ impl RouterCore {
                 // route/alias already exists in storage — the previous redundant
                 // `has(&DataKey::Route(...))` block after this call has been
                 // removed (issue #1279: it was unreachable).
+                // validate_route_name already checks if the route or an alias
+                // with this name already exists in storage, returning
+                // RouteAlreadyExists — so no separate storage check is needed
+                // here (issue #1279 removed an unreachable duplicate check).
                 if let Err(err) = Self::validate_route_name(&env, &route.name) {
                     result.record_failure(idx, Self::router_error_to_batch(&env, err));
                     return Ok(result);
@@ -1601,12 +1614,19 @@ impl RouterCore {
         if max_routes == 0 {
             return Err(RouterError::InvalidRouteName);
         }
+        let old_max: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxRoutes)
+            .unwrap_or(DEFAULT_MAX_ROUTES);
         env.storage()
             .instance()
             .set(&DataKey::MaxRoutes, &max_routes);
         env.events().publish(
             (Symbol::new(&env, "max_routes_updated"),),
             max_routes,
+            (Symbol::new(&env, router_common::EVENT_MAX_ROUTES_UPDATED),),
+            (old_max, max_routes),
         );
         Ok(())
     }
@@ -1945,6 +1965,18 @@ impl RouterCore {
         env.storage()
             .instance()
             .set(&DataKey::ScoringWeights, &weights);
+
+        env.events().publish(
+            (Symbol::new(
+                &env,
+                router_common::EVENT_SCORING_WEIGHTS_UPDATED,
+            ),),
+            (
+                weights.liquidity_weight,
+                weights.reliability_weight,
+                weights.fee_divisor,
+            ),
+        );
 
         // Re-rank routes using the new weights.
         Self::recompute_best_route(&env);
@@ -6712,5 +6744,70 @@ mod tests {
         // r11 at depth 11), exceeding MAX_RECURSION_DEPTH.
         let result = client.try_resolve_with_dependencies(&names[0]);
         assert_eq!(result, Err(Ok(RouterError::RecursionLimitExceeded)));
+    }
+
+    #[test]
+    fn test_update_route_unauthorized_fails_and_keeps_old_address() {
+        let (env, admin, client) = setup();
+        let attacker = Address::generate(&env);
+        let name = String::from_str(&env, "oracle");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+        client.register_route(&admin, &name, &addr1, &None);
+
+        let result = client.try_update_route(&attacker, &name, &addr2);
+        assert_eq!(result, Err(Ok(RouterError::Unauthorized)));
+        assert_eq!(client.resolve(&name), addr1);
+        assert_eq!(client.get_route(&name).unwrap().updated_by, admin);
+    }
+
+    #[test]
+    fn test_update_route_unknown_name_returns_route_not_found() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "missing");
+        let addr = Address::generate(&env);
+
+        let result = client.try_update_route(&admin, &name, &addr);
+        assert_eq!(result, Err(Ok(RouterError::RouteNotFound)));
+        assert!(client.get_route(&name).is_none());
+    }
+
+    #[test]
+    fn test_set_route_paused_unauthorized_fails_and_keeps_state() {
+        let (env, admin, client) = setup();
+        let attacker = Address::generate(&env);
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr, &None);
+
+        let result = client.try_set_route_paused(&attacker, &name, &true);
+        assert_eq!(result, Err(Ok(RouterError::Unauthorized)));
+        let entry = client.get_route(&name).unwrap();
+        assert!(!entry.paused);
+        assert_eq!(entry.updated_by, admin);
+        assert_eq!(client.resolve(&name), addr);
+    }
+
+    #[test]
+    fn test_set_route_paused_unknown_name_returns_route_not_found() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "missing");
+
+        let result = client.try_set_route_paused(&admin, &name, &true);
+        assert_eq!(result, Err(Ok(RouterError::RouteNotFound)));
+        assert!(client.get_route(&name).is_none());
+    }
+
+    #[test]
+    fn test_set_paused_unauthorized_fails_and_resolve_still_works() {
+        let (env, admin, client) = setup();
+        let attacker = Address::generate(&env);
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr, &None);
+
+        let result = client.try_set_paused(&attacker, &true);
+        assert_eq!(result, Err(Ok(RouterError::Unauthorized)));
+        assert_eq!(client.resolve(&name), addr);
     }
 }
