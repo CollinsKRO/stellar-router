@@ -3424,4 +3424,230 @@ mod tests {
         // Window elapsed — limit should reset to true
         assert!(client.check_caller_rate_limit(&route, &caller));
     }
+
+    // ── Issue #1470: total_violations persisted under Throttle / LogOnly ─────
+
+    #[test]
+    fn test_throttle_strategy_persists_total_violations() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &1, &60, &true, &0, &0, &0, &0);
+        client.set_rate_limit_strategy(&admin, &route, &RateLimitStrategy::Throttle);
+
+        let caller = Address::generate(&env);
+        client.pre_call(&caller, &route);
+        client.pre_call(&caller, &route);
+        client.pre_call(&caller, &route);
+
+        let state = client.rate_limit_state(&route, &caller).unwrap();
+        assert_eq!(
+            state.total_violations, 2,
+            "2 over-limit calls must be recorded under Throttle"
+        );
+        assert_eq!(
+            state.calls_in_window, 1,
+            "over-limit calls must not count toward calls_in_window"
+        );
+        assert_eq!(client.get_rate_limit_stats(&route, &caller), Some(state));
+    }
+
+    #[test]
+    fn test_log_only_strategy_persists_total_violations() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &1, &60, &true, &0, &0, &0, &0);
+        client.set_rate_limit_strategy(&admin, &route, &RateLimitStrategy::LogOnly);
+
+        let caller = Address::generate(&env);
+        client.pre_call(&caller, &route);
+        client.pre_call(&caller, &route);
+        client.pre_call(&caller, &route);
+
+        let state = client.rate_limit_state(&route, &caller).unwrap();
+        assert_eq!(
+            state.total_violations, 2,
+            "2 over-limit calls must be recorded under LogOnly"
+        );
+        assert_eq!(
+            state.calls_in_window, 1,
+            "over-limit calls must not count toward calls_in_window"
+        );
+        assert_eq!(client.get_rate_limit_stats(&route, &caller), Some(state));
+    }
+
+    // ── Issue #1471: prune_stale_rate_limits eviction + throttle ─────────────
+
+    #[test]
+    fn test_prune_evicts_stale_caller_entry() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &10, &60, &true, &0, &0, &0, &0);
+
+        let caller_a = Address::generate(&env);
+        let caller_b = Address::generate(&env);
+
+        // First pre_call on the route prunes (nothing to evict) and records
+        // LastRateLimitPrune = t0.
+        client.pre_call(&caller_a, &route);
+        assert!(client.rate_limit_state(&route, &caller_a).is_some());
+
+        // Past both 4 * 60s (stale threshold) and the 3600s prune interval.
+        env.ledger()
+            .with_mut(|l| l.timestamp += RATE_LIMIT_PRUNE_INTERVAL);
+        client.pre_call(&caller_b, &route);
+
+        assert!(
+            client.rate_limit_state(&route, &caller_a).is_none(),
+            "idle caller entry must be evicted once the prune interval has passed"
+        );
+        assert!(client.rate_limit_state(&route, &caller_b).is_some());
+    }
+
+    #[test]
+    fn test_prune_skipped_within_prune_interval() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &10, &60, &true, &0, &0, &0, &0);
+
+        let caller_a = Address::generate(&env);
+        let caller_b = Address::generate(&env);
+
+        client.pre_call(&caller_a, &route);
+
+        // A's entry is stale (> 4 * 60s idle) but the last prune was less than
+        // RATE_LIMIT_PRUNE_INTERVAL ago, so no prune should run.
+        env.ledger().with_mut(|l| l.timestamp += 4 * 60 + 1);
+        client.pre_call(&caller_b, &route);
+
+        assert!(
+            client.rate_limit_state(&route, &caller_a).is_some(),
+            "pruning must be throttled to once per RATE_LIMIT_PRUNE_INTERVAL"
+        );
+    }
+
+    #[test]
+    fn test_prune_respects_caller_override_window() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        // Route window: 60s → stale after 240s.
+        client.configure_route(&admin, &route, &10, &60, &true, &0, &0, &0, &0);
+
+        let caller_a = Address::generate(&env);
+        let caller_b = Address::generate(&env);
+        // Override window: 1000s → stale after 4000s.
+        client.configure_caller_rate_limit(&admin, &route, &caller_a, &10, &1000);
+
+        client.pre_call(&caller_a, &route);
+
+        // 3600s: past 4 * route_window, not past 4 * override_window.
+        env.ledger()
+            .with_mut(|l| l.timestamp += RATE_LIMIT_PRUNE_INTERVAL);
+        client.pre_call(&caller_b, &route);
+
+        assert!(
+            client.rate_limit_state(&route, &caller_a).is_some(),
+            "caller with a longer override window must not be evicted early"
+        );
+
+        // 7200s total: now past 4 * override_window and another prune interval.
+        env.ledger()
+            .with_mut(|l| l.timestamp += RATE_LIMIT_PRUNE_INTERVAL);
+        client.pre_call(&caller_b, &route);
+
+        assert!(
+            client.rate_limit_state(&route, &caller_a).is_none(),
+            "caller must be evicted once their own override window is stale"
+        );
+    }
+
+    // ── Issue #1472: unauthorized set_global_enabled / configure_caller_rate_limit
+
+    #[test]
+    fn test_set_global_enabled_unauthorized_fails() {
+        let (env, _admin, client) = setup();
+        let attacker = Address::generate(&env);
+
+        let result = client.try_set_global_enabled(&attacker, &false);
+        assert_eq!(result, Err(Ok(MiddlewareError::Unauthorized)));
+        assert!(
+            client.is_global_enabled(),
+            "global enabled flag must be unchanged after unauthorized call"
+        );
+    }
+
+    #[test]
+    fn test_configure_caller_rate_limit_unauthorized_fails() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &5, &60, &true, &0, &0, &0, &0);
+
+        let attacker = Address::generate(&env);
+        let target = Address::generate(&env);
+
+        let result = client.try_configure_caller_rate_limit(&attacker, &route, &target, &0, &0);
+        assert_eq!(result, Err(Ok(MiddlewareError::Unauthorized)));
+        assert!(
+            client.get_caller_rate_limit(&route, &target).is_none(),
+            "no override must be stored after unauthorized call"
+        );
+    }
+
+    // ── Issue #1473: half-open probe failure re-opens the circuit ────────────
+
+    #[test]
+    fn test_half_open_probe_failure_reopens_circuit() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        let caller = Address::generate(&env);
+
+        // failure_threshold=2, recovery_window=100s
+        client.configure_route(&admin, &route, &0, &0, &true, &2, &100, &0, &0);
+
+        client.post_call(&caller, &route, &false);
+        client.post_call(&caller, &route, &false);
+        assert!(client.circuit_breaker_state(&route).unwrap().is_open);
+
+        env.ledger().with_mut(|l| l.timestamp += 101);
+
+        // Moves the circuit to half-open.
+        assert!(client.try_pre_call(&caller, &route).is_ok());
+        let half_open = client.circuit_breaker_state(&route).unwrap();
+        assert!(half_open.is_half_open);
+        assert!(!half_open.is_open);
+
+        // Probe fails.
+        client.post_call(&caller, &route, &false);
+
+        let events = env.events().all();
+        let reopened_event = events.iter().find(|(_, topics, data)| {
+            let is_opened = topics
+                .get(0)
+                .map(|v| {
+                    Symbol::from_val(&env, &v)
+                        == Symbol::new(&env, router_common::EVENT_CIRCUIT_OPENED)
+                })
+                .unwrap_or(false);
+            if !is_opened {
+                return false;
+            }
+            let (_route, failure_count): (String, u32) = FromVal::from_val(&env, data);
+            failure_count == 1
+        });
+        assert!(
+            reopened_event.is_some(),
+            "circuit_opened event with failure_count = 1 must be emitted on probe failure"
+        );
+
+        let now = env.ledger().timestamp();
+        let state = client.circuit_breaker_state(&route).unwrap();
+        assert!(state.is_open, "circuit must re-open after failed probe");
+        assert!(!state.is_half_open, "circuit must leave half-open");
+        assert_eq!(state.failure_count, 1);
+        assert_eq!(state.opened_at, now, "opened_at must reset to the probe failure time");
+
+        assert_eq!(
+            client.try_pre_call(&caller, &route),
+            Err(Ok(MiddlewareError::CircuitOpen))
+        );
+    }
 }
