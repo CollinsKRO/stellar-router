@@ -2807,6 +2807,75 @@ mod tests {
 
     // ── Issue #634: get_call_log modulo by zero panic ─────────────────────────
 
+    /// Number of `call_log_cleared` events in `env.events().all()`.
+    fn count_call_log_cleared_events(env: &Env) -> u32 {
+        let cleared = Symbol::new(env, router_common::EVENT_CALL_LOG_CLEARED);
+        env.events()
+            .all()
+            .iter()
+            .filter(|e| {
+                e.1.get(0)
+                    .map(|v| Symbol::from_val(env, &v) == cleared)
+                    .unwrap_or(false)
+            })
+            .count() as u32
+    }
+
+    #[test]
+    fn test_configure_route_first_time_emits_no_call_log_cleared() {
+        // Issue #1193: a first-time configure has no log to clear.
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+
+        client.configure_route(&admin, &route, &0, &0, &true, &0, &0, &5, &0);
+        assert_eq!(count_call_log_cleared_events(&env), 0);
+    }
+
+    #[test]
+    fn test_configure_route_same_log_retention_keeps_log_and_summary() {
+        // Issue #1193: reconfiguring with an unchanged log_retention must not
+        // wipe the call log or its summary.
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        let caller = Address::generate(&env);
+
+        client.configure_route(&admin, &route, &0, &0, &true, &0, &0, &5, &0);
+        client.post_call(&caller, &route, &true);
+        client.post_call(&caller, &route, &false);
+        let log_before = client.get_call_log(&route);
+        let summary_before = client.get_call_log_summary(&route);
+        assert_eq!(log_before.len(), 2);
+        assert!(summary_before.is_some());
+
+        // Same retention, different max_calls_per_window.
+        client.configure_route(&admin, &route, &10, &60, &true, &0, &0, &5, &0);
+
+        assert_eq!(count_call_log_cleared_events(&env), 0);
+        assert_eq!(client.get_call_log(&route), log_before);
+        assert_eq!(client.get_call_log_summary(&route), summary_before);
+    }
+
+    #[test]
+    fn test_configure_route_changed_log_retention_clears_log_and_summary() {
+        // Issue #1193: a log_retention change must clear both the call log and
+        // its summary via call_log::clear, emitting call_log_cleared once.
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        let caller = Address::generate(&env);
+
+        client.configure_route(&admin, &route, &0, &0, &true, &0, &0, &5, &0);
+        client.post_call(&caller, &route, &true);
+        client.post_call(&caller, &route, &false);
+        assert_eq!(client.get_call_log(&route).len(), 2);
+        assert!(client.get_call_log_summary(&route).is_some());
+
+        client.configure_route(&admin, &route, &0, &0, &true, &0, &0, &10, &0);
+
+        assert_eq!(count_call_log_cleared_events(&env), 1);
+        assert_eq!(client.get_call_log(&route).len(), 0);
+        assert_eq!(client.get_call_log_summary(&route), None);
+    }
+
     #[test]
     fn test_get_call_log_with_log_retention_zero_returns_empty() {
         let (env, admin, client) = setup();
