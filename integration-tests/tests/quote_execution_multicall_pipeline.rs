@@ -369,8 +369,9 @@ fn test_pipeline_rate_limiting() {
 
     // The 11th call should be rate limited
     let limited = s.middleware.try_pre_call(&s.user, &route);
-    assert!(
-        limited.is_err(),
+    assert_eq!(
+        limited,
+        Err(Ok(router_middleware::MiddlewareError::RateLimitExceeded)),
         "Call 11 should be rate limited (exceeds 10 call limit)"
     );
 
@@ -599,8 +600,13 @@ fn test_pipeline_rate_limit_reset() {
         let _ = s.middleware.try_pre_call(&s.user, &route);
     }
 
-    // 11th call should fail
-    assert!(s.middleware.try_pre_call(&s.user, &route).is_err());
+    // 11th call should fail with exact error
+    let result = s.middleware.try_pre_call(&s.user, &route);
+    assert_eq!(
+        result,
+        Err(Ok(router_middleware::MiddlewareError::RateLimitExceeded)),
+        "11th call should be rate limited"
+    );
 
     // Advance time past the 60s window
     s.advance_time(61);
@@ -630,8 +636,13 @@ fn test_pipeline_multiple_routes_independent() {
         let _ = s.middleware.try_pre_call(&s.user, &route1);
     }
 
-    // Route1 should now be rate limited
-    assert!(s.middleware.try_pre_call(&s.user, &route1).is_err());
+    // Route1 should now be rate limited with exact error
+    let result = s.middleware.try_pre_call(&s.user, &route1);
+    assert_eq!(
+        result,
+        Err(Ok(router_middleware::MiddlewareError::RateLimitExceeded)),
+        "route1 should be rate limited"
+    );
 
     // But route2 should still be available (independent limit)
     assert!(s.middleware.try_pre_call(&s.user, &route2).is_ok());
@@ -646,12 +657,25 @@ fn test_pipeline_multicall_required_vs_optional() {
     let route_name = "swap/usd-to-eur";
     s.setup_swap_route(route_name);
 
+    let route = String::from_str(&s.env, route_name);
     let mut calls = Vec::new(&s.env);
 
-    // Required call (will succeed since all calls are mocked)
-    let call1 = s.make_swap_call(true); // Must succeed
-                                        // Optional calls (can fail)
-    let call2 = s.make_swap_call(false); // Can fail
+    // Required call (will succeed)
+    let call1 = s.make_swap_call(true);
+    
+    // Optional call that fails (unregistered route in router-core)
+    let unregistered_route = String::from_str(&s.env, "nonexistent/route");
+    let call2 = CallDescriptor {
+        target: s.core.address.clone(),
+        function: Symbol::new(&s.env, "resolve"),
+        required: false,
+        instruction_budget: None,
+        args: {
+            let mut args = Vec::new(&s.env);
+            args.push_back(unregistered_route.to_val());
+            args
+        },
+    };
 
     calls.push_back(call1);
     calls.push_back(call2);
@@ -663,8 +687,97 @@ fn test_pipeline_multicall_required_vs_optional() {
         &None,  // max_total_gas
     );
 
-    assert_eq!(result.successes.len() + result.failures.len(), 2);
-    println!("\n✓ Multicall handled required and optional calls correctly");
+    // Should have 1 success and 1 failure
+    assert_eq!(result.successes.len(), 1, "should have 1 successful call");
+    assert_eq!(result.failures.len(), 1, "should have 1 failed call");
+    println!("\n✓ Multicall handled required and optional calls: 1 succeeded, 1 failed");
+}
+
+/// Test 12b: Multicall with required call that fails aborts the batch
+#[test]
+fn test_pipeline_multicall_required_call_fails_aborts() {
+    let s = PipelineTestSuite::setup();
+    let route_name = "swap/usd-to-eur";
+    s.setup_swap_route(route_name);
+
+    let mut calls = Vec::new(&s.env);
+
+    // Required call that will fail (call to paused route)
+    let paused_route = String::from_str(&s.env, "paused/route");
+    let paused_addr = Address::generate(&s.env);
+    s.core.register_route(&s.admin, &paused_route, &paused_addr, &None);
+    s.core.set_route_paused(&s.admin, &paused_route, &true);
+    
+    let failing_call = CallDescriptor {
+        target: s.core.address.clone(),
+        function: Symbol::new(&s.env, "resolve"),
+        required: true,
+        instruction_budget: None,
+        args: {
+            let mut args = Vec::new(&s.env);
+            args.push_back(paused_route.to_val());
+            args
+        },
+    };
+
+    calls.push_back(failing_call);
+
+    let result = s.multicall.try_execute_batch(
+        &s.user,
+        &calls,
+        &false, // not simulating
+        &true,  // store results
+        &false, // don't fail fast
+        &None,  // max_total_gas
+    );
+
+    assert_eq!(
+        result,
+        Err(Ok(router_multicall::MulticallError::RequiredCallFailed)),
+        "batch with failing required call should return RequiredCallFailed"
+    );
+    println!("\n✓ Multicall with failing required call correctly aborted");
+}
+
+/// Test 13b: Execution against paused route fails with ContractRejected
+#[test]
+fn test_pipeline_execution_against_paused_route() {
+    let s = PipelineTestSuite::setup();
+    let route_name = "swap/paused-route";
+    s.setup_swap_route(route_name);
+
+    let route = String::from_str(&s.env, route_name);
+    
+    // Pause the route
+    s.core.set_route_paused(&s.admin, &route, &true);
+
+    // Try to execute against the paused route
+    let exec_request = ExecutionRequest {
+        target: s.core.address.clone(),
+        function: Symbol::new(&s.env, "resolve"),
+        simulate_first: false,
+        max_retries: 1,
+        args: {
+            let mut args = Vec::new(&s.env);
+            args.push_back(route.to_val());
+            args
+        },
+        amount: 0,
+    };
+
+    let result = s.execution.try_execute(&s.user, &exec_request);
+    
+    assert_eq!(
+        result,
+        Err(Ok(router_execution::ExecutionError::ContractRejected)),
+        "execution against paused route should return ContractRejected"
+    );
+    
+    // Verify stats: 0 successes, 1 failure
+    let stats = s.execution.stats();
+    assert_eq!(stats.1, 1, "should have 1 failed execution");
+    
+    println!("\n✓ Execution against paused route correctly rejected");
 }
 
 /// Test 13: Authorization checks across all contracts

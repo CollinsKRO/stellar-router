@@ -3,6 +3,9 @@
 
 set -e
 
+# Change to repo root so relative paths are stable
+cd "$(dirname "$0")/.."
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -30,6 +33,8 @@ CONTRACTS=(
     "router_middleware.wasm"
     "router_timelock.wasm"
     "router_multicall.wasm"
+    "router_quote.wasm"
+    "router_execution.wasm"
 )
 
 MISSING_CONTRACTS=()
@@ -96,7 +101,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Build test command
-CMD="cargo test --test integration_tests"
+CMD="cargo test --manifest-path integration-tests/Cargo.toml --test integration_tests"
 
 if [ -n "$TEST_FILTER" ]; then
     CMD="$CMD $TEST_FILTER"

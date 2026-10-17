@@ -221,9 +221,12 @@ mod quick_tests {
                 &caller,
             )
             .expect_err("pre_call 3 should fail with RateLimitExceeded");
+        
+        // stellar-cli prints contract errors like "Error(Contract, #4)" where 4 is the error code
+        // RateLimitExceeded is error variant #4 in MiddlewareError enum
         assert!(
-            err.contains("RateLimitExceeded") || err.contains("4"),
-            "expected RateLimitExceeded, got: {}",
+            err.contains("Error(Contract, #4)") || err.contains("RateLimitExceeded"),
+            "expected RateLimitExceeded error, got: {}",
             err
         );
         println!("✓ Third call correctly rejected: {}", err);

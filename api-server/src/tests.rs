@@ -840,39 +840,88 @@ fn test_status_event_round_trips_through_json() {
 
 // ── Issue #720: CORS invalid origin warning ───────────────────────────────────
 
-#[test]
-fn test_build_cors_layer_valid_origins_accepted() {
+/// Helper to wrap a route with build_cors_layer and test CORS headers.
+async fn test_cors_with_origin(origins: &[String], request_origin: Option<&str>) -> axum::response::Response {
     use crate::build_cors_layer;
-    // Should not panic with valid HTTP origins
-    let origins = vec![
-        "http://localhost:3000".to_string(),
-        "https://example.com".to_string(),
-    ];
-    let _ = build_cors_layer(&origins);
+    use axum::body::Body;
+    use tower::ServiceExt;
+    
+    let cors = build_cors_layer(origins);
+    let app = Router::new()
+        .route("/test", get(|| async { "ok" }))
+        .layer(cors);
+
+    let mut request = Request::builder()
+        .method("GET")
+        .uri("/test");
+    
+    if let Some(origin) = request_origin {
+        request = request.header("origin", origin);
+    }
+    
+    app.oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
 }
 
-#[test]
-fn test_build_cors_layer_empty_origins() {
-    use crate::build_cors_layer;
-    let _ = build_cors_layer(&[]);
+#[tokio::test]
+async fn test_build_cors_layer_empty_origins_no_header() {
+    let resp = test_cors_with_origin(&[], Some("https://example.com")).await;
+    assert!(
+        resp.headers().get("access-control-allow-origin").is_none(),
+        "empty origins should produce no access-control-allow-origin header"
+    );
 }
 
-#[test]
-fn test_build_cors_layer_wildcard() {
-    use crate::build_cors_layer;
+#[tokio::test]
+async fn test_build_cors_layer_wildcard_allows_any_origin() {
     let origins = vec!["*".to_string()];
-    let _ = build_cors_layer(&origins);
+    let resp = test_cors_with_origin(&origins, Some("https://example.com")).await;
+    assert_eq!(
+        resp.headers()
+            .get("access-control-allow-origin")
+            .map(|h| h.to_str().unwrap()),
+        Some("*"),
+        "wildcard should allow any origin"
+    );
 }
 
-#[test]
-fn test_build_cors_layer_invalid_origin_does_not_panic() {
-    use crate::build_cors_layer;
-    // Invalid origins (missing scheme, trailing slash, etc.) must be skipped
-    // with a warning rather than causing a panic.
+#[tokio::test]
+async fn test_build_cors_layer_allowed_origin_is_echoed() {
+    let origins = vec!["https://example.com".to_string()];
+    let resp = test_cors_with_origin(&origins, Some("https://example.com")).await;
+    assert_eq!(
+        resp.headers()
+            .get("access-control-allow-origin")
+            .map(|h| h.to_str().unwrap()),
+        Some("https://example.com"),
+        "allowed origin should be echoed back"
+    );
+}
+
+#[tokio::test]
+async fn test_build_cors_layer_disallowed_origin_not_echoed() {
+    let origins = vec!["https://allowed.com".to_string()];
+    let resp = test_cors_with_origin(&origins, Some("https://disallowed.com")).await;
+    assert!(
+        resp.headers().get("access-control-allow-origin").is_none(),
+        "disallowed origin should not produce access-control-allow-origin header"
+    );
+}
+
+#[tokio::test]
+async fn test_build_cors_layer_mixed_invalid_valid_origins() {
     let origins = vec![
         "not-a-valid-origin".to_string(),
-        "https://example.com".to_string(),
+        "https://valid.com".to_string(),
     ];
-    // Must complete without panicking; the invalid entry is dropped + warned.
-    let _ = build_cors_layer(&origins);
+    // Invalid entries should be dropped, valid ones should work
+    let resp = test_cors_with_origin(&origins, Some("https://valid.com")).await;
+    assert_eq!(
+        resp.headers()
+            .get("access-control-allow-origin")
+            .map(|h| h.to_str().unwrap()),
+        Some("https://valid.com"),
+        "valid origin should work even when invalid entries are present"
+    );
 }
