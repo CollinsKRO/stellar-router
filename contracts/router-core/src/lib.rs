@@ -6694,4 +6694,69 @@ mod tests {
         let result = client.try_resolve_with_dependencies(&names[0]);
         assert_eq!(result, Err(Ok(RouterError::RecursionLimitExceeded)));
     }
+
+    #[test]
+    fn test_update_route_unauthorized_fails_and_keeps_old_address() {
+        let (env, admin, client) = setup();
+        let attacker = Address::generate(&env);
+        let name = String::from_str(&env, "oracle");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+        client.register_route(&admin, &name, &addr1, &None);
+
+        let result = client.try_update_route(&attacker, &name, &addr2);
+        assert_eq!(result, Err(Ok(RouterError::Unauthorized)));
+        assert_eq!(client.resolve(&name), addr1);
+        assert_eq!(client.get_route(&name).unwrap().updated_by, admin);
+    }
+
+    #[test]
+    fn test_update_route_unknown_name_returns_route_not_found() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "missing");
+        let addr = Address::generate(&env);
+
+        let result = client.try_update_route(&admin, &name, &addr);
+        assert_eq!(result, Err(Ok(RouterError::RouteNotFound)));
+        assert!(client.get_route(&name).is_none());
+    }
+
+    #[test]
+    fn test_set_route_paused_unauthorized_fails_and_keeps_state() {
+        let (env, admin, client) = setup();
+        let attacker = Address::generate(&env);
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr, &None);
+
+        let result = client.try_set_route_paused(&attacker, &name, &true);
+        assert_eq!(result, Err(Ok(RouterError::Unauthorized)));
+        let entry = client.get_route(&name).unwrap();
+        assert!(!entry.paused);
+        assert_eq!(entry.updated_by, admin);
+        assert_eq!(client.resolve(&name), addr);
+    }
+
+    #[test]
+    fn test_set_route_paused_unknown_name_returns_route_not_found() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "missing");
+
+        let result = client.try_set_route_paused(&admin, &name, &true);
+        assert_eq!(result, Err(Ok(RouterError::RouteNotFound)));
+        assert!(client.get_route(&name).is_none());
+    }
+
+    #[test]
+    fn test_set_paused_unauthorized_fails_and_resolve_still_works() {
+        let (env, admin, client) = setup();
+        let attacker = Address::generate(&env);
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr, &None);
+
+        let result = client.try_set_paused(&attacker, &true);
+        assert_eq!(result, Err(Ok(RouterError::Unauthorized)));
+        assert_eq!(client.resolve(&name), addr);
+    }
 }

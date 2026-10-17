@@ -2354,4 +2354,119 @@ mod tests {
         assert_eq!(total_execs, 0);
         assert_eq!(total_errors, 0);
     }
+
+    // ── NotInitialized coverage (#1467) ───────────────────────────────────────
+
+    /// Registers `RouterExecution` without calling `initialize`.
+    fn setup_uninitialized() -> (Env, RouterExecutionClient<'static>) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RouterExecution);
+        let client = RouterExecutionClient::new(&env, &contract_id);
+        (env, client)
+    }
+
+    #[test]
+    fn test_estimate_fee_uninitialized_fails() {
+        let (env, client) = setup_uninitialized();
+        let target = Address::generate(&env);
+        // A valid amount, so the init check is what fails.
+        let result = client.try_estimate_fee(&target, &Symbol::new(&env, "ping"), &1_000, &0);
+        assert_eq!(result, Err(Ok(ExecutionError::NotInitialized)));
+    }
+
+    #[test]
+    fn test_simulate_uninitialized_fails() {
+        let (env, client) = setup_uninitialized();
+        let caller = Address::generate(&env);
+        let target = Address::generate(&env);
+        let result =
+            client.try_simulate(&caller, &target, &Symbol::new(&env, "ping"), &Vec::new(&env));
+        assert_eq!(result, Err(Ok(ExecutionError::NotInitialized)));
+    }
+
+    #[test]
+    fn test_get_execution_history_uninitialized_fails() {
+        let (_, client) = setup_uninitialized();
+        let result = client.try_get_execution_history(&10);
+        assert_eq!(result, Err(Ok(ExecutionError::NotInitialized)));
+    }
+
+    #[test]
+    fn test_set_backoff_config_uninitialized_fails() {
+        let (env, client) = setup_uninitialized();
+        let caller = Address::generate(&env);
+        let result = client.try_set_backoff_config(&caller, &1000, &300);
+        assert_eq!(result, Err(Ok(ExecutionError::NotInitialized)));
+    }
+
+    #[test]
+    fn test_transfer_admin_uninitialized_fails() {
+        let (env, client) = setup_uninitialized();
+        let current = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        let result = client.try_transfer_admin(&current, &new_admin);
+        assert_eq!(result, Err(Ok(ExecutionError::NotInitialized)));
+    }
+
+    #[test]
+    fn test_set_max_retries_uninitialized_fails() {
+        let (env, client) = setup_uninitialized();
+        let caller = Address::generate(&env);
+        let result = client.try_set_max_retries(&caller, &3);
+        assert_eq!(result, Err(Ok(ExecutionError::NotInitialized)));
+    }
+
+    #[test]
+    fn test_set_max_history_size_uninitialized_fails() {
+        let (env, client) = setup_uninitialized();
+        let caller = Address::generate(&env);
+        let result = client.try_set_max_history_size(&caller, &50);
+        assert_eq!(result, Err(Ok(ExecutionError::NotInitialized)));
+    }
+
+    // ── Admin setter event payloads (#1468) ───────────────────────────────────
+
+    #[test]
+    fn test_set_max_retries_emits_event() {
+        let (env, admin, client) = setup();
+        client.set_max_retries(&admin, &4);
+        let event = env.events().all().last().unwrap().clone();
+        let topic: Symbol = event.1.get(0).unwrap().into_val(&env);
+        assert_eq!(
+            topic,
+            Symbol::new(&env, router_common::EVENT_MAX_RETRIES_UPDATED)
+        );
+        let data: (u32, u32) = event.2.into_val(&env);
+        assert_eq!(data, (2u32, 4u32));
+    }
+
+    #[test]
+    fn test_set_backoff_config_emits_event() {
+        let (env, admin, client) = setup();
+        client.set_backoff_config(&admin, &1000, &300);
+        let event = env.events().all().last().unwrap().clone();
+        let topic: Symbol = event.1.get(0).unwrap().into_val(&env);
+        assert_eq!(
+            topic,
+            Symbol::new(&env, router_common::EVENT_BACKOFF_CONFIG_UPDATED)
+        );
+        let data: (u64, u32, u64, u32) = event.2.into_val(&env);
+        assert_eq!(data, (500u64, 200u32, 1000u64, 300u32));
+    }
+
+    #[test]
+    fn test_set_max_history_size_emits_event() {
+        let (env, admin, client) = setup();
+        client.set_max_history_size(&admin, &50);
+        let event = env.events().all().last().unwrap().clone();
+        let topic: Symbol = event.1.get(0).unwrap().into_val(&env);
+        assert_eq!(
+            topic,
+            Symbol::new(&env, router_common::EVENT_MAX_HISTORY_SIZE_UPDATED)
+        );
+        // The default size is reported as the old value.
+        let data: (u32, u32) = event.2.into_val(&env);
+        assert_eq!(data, (1000u32, 50u32));
+    }
 }
