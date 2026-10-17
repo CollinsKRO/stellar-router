@@ -33,12 +33,14 @@
 //! - `alias_resolved` ΓÇö Route alias resolved (alias_name, selected_route_name)
 //! - `best_route_selected` ΓÇö Best route selected (route_name, best_score)
 //! - `route_scored` ΓÇö Route score updated (route_name, liquidity_score, fee_bps, reliability_score)
+//! - `max_routes_updated` ΓÇö Max route count limit updated (old_max, new_max)
+//! - `scoring_weights_updated` ΓÇö Scoring weights updated (liquidity_weight, reliability_weight, fee_divisor)
 //! - `admin_transferred` ΓÇö Admin transferred (old_admin, new_admin)
 
 pub mod scoring;
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, Address, Env, Map, String, Symbol, Vec,
 };
 #[cfg(test)]
 extern crate alloc;
@@ -591,6 +593,7 @@ impl RouterCore {
     /// # Errors
     /// * [`RouterError::Unauthorized`] ΓÇö if `caller` is not the admin.
     /// * [`RouterError::RouteNotFound`] ΓÇö if no route with `name` exists.
+    /// * [`RouterError::InvalidAddress`] ΓÇö if `new_address` is the zero address.
     /// * [`RouterError::NotInitialized`] ΓÇö if the contract has not been initialized.
     pub fn update_route(
         env: Env,
@@ -601,6 +604,11 @@ impl RouterCore {
         router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         caller.require_auth();
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, RouterError)?;
+
+        // Validate address is not the zero address (same guard as register_route)
+        if Self::is_zero_address(&env, &new_address) {
+            return Err(RouterError::InvalidAddress);
+        }
 
         let mut entry: RouteEntry = env
             .storage()
@@ -756,26 +764,24 @@ impl RouterCore {
         let mut result = router_common::BatchResult::new(&env);
 
         if fail_fast {
-            let mut seen = Vec::new(&env);
+            // Use a Map for O(1) duplicate-name lookups instead of Vec::contains
+            // which would make this loop O(n²) (issue #1280).
+            let mut seen = Map::new(&env);
             for (index, route) in routes.iter().enumerate() {
                 let idx = index as u32;
-                if seen.contains(&route.name) {
+                if seen.contains_key(route.name.clone()) {
                     result.record_failure(idx, router_common::BatchItemError::AlreadyExists);
                     return Ok(result);
                 }
+                // validate_route_name already checks if the route or an alias
+                // with this name already exists in storage, returning
+                // RouteAlreadyExists — so no separate storage check is needed
+                // here (issue #1279 removed an unreachable duplicate check).
                 if let Err(err) = Self::validate_route_name(&env, &route.name) {
                     result.record_failure(idx, Self::router_error_to_batch(&env, err));
                     return Ok(result);
                 }
-                if env
-                    .storage()
-                    .instance()
-                    .has(&DataKey::Route(route.name.clone()))
-                {
-                    result.record_failure(idx, router_common::BatchItemError::AlreadyExists);
-                    return Ok(result);
-                }
-                seen.push_back(route.name.clone());
+                seen.set(route.name.clone(), true);
             }
 
             for (index, route) in routes.iter().enumerate() {
@@ -1597,9 +1603,18 @@ impl RouterCore {
         if max_routes == 0 {
             return Err(RouterError::InvalidRouteName);
         }
+        let old_max: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxRoutes)
+            .unwrap_or(DEFAULT_MAX_ROUTES);
         env.storage()
             .instance()
             .set(&DataKey::MaxRoutes, &max_routes);
+        env.events().publish(
+            (Symbol::new(&env, router_common::EVENT_MAX_ROUTES_UPDATED),),
+            (old_max, max_routes),
+        );
         Ok(())
     }
 
@@ -1937,6 +1952,18 @@ impl RouterCore {
         env.storage()
             .instance()
             .set(&DataKey::ScoringWeights, &weights);
+
+        env.events().publish(
+            (Symbol::new(
+                &env,
+                router_common::EVENT_SCORING_WEIGHTS_UPDATED,
+            ),),
+            (
+                weights.liquidity_weight,
+                weights.reliability_weight,
+                weights.fee_divisor,
+            ),
+        );
 
         // Re-rank routes using the new weights.
         Self::recompute_best_route(&env);
@@ -2469,7 +2496,7 @@ impl RouterCore {
     }
 
     fn validate_metadata(meta: &RouteMetadata) -> Result<(), RouterError> {
-        if meta.description.len() > 256 || meta.tags.len() > 5 {
+        if meta.description.len() > MAX_METADATA_DESCRIPTION_LEN || meta.tags.len() > MAX_METADATA_TAGS {
             return Err(RouterError::InvalidMetadata);
         }
         for tag in meta.tags.iter() {

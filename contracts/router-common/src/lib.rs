@@ -235,6 +235,12 @@ pub const EVENT_ROUTE_FEE_SET: &str = "route_fee_set";
 
 /// Standard event topic for removing a custom per-route fee (reverts to default)
 pub const EVENT_ROUTE_FEE_UNSET: &str = "route_fee_unset";
+
+/// Standard event topic for when the max route count limit is updated.
+pub const EVENT_MAX_ROUTES_UPDATED: &str = "max_routes_updated";
+
+/// Standard event topic for when the composite scoring weights are updated.
+pub const EVENT_SCORING_WEIGHTS_UPDATED: &str = "scoring_weights_updated";
 /// Standard event topic for per-route tiered fee schedule updates
 pub const EVENT_ROUTE_FEE_TIERS_SET: &str = "route_fee_tiers_set";
 

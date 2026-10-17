@@ -689,7 +689,7 @@ impl RouterMiddleware {
     }
 
     /// Returns whether the middleware is currently globally enabled.
-    pub fn is_global_enabled(env: Env) -> bool {
+    pub fn get_global_enabled(env: Env) -> bool {
         env.storage()
             .instance()
             .get(&DataKey::GlobalEnabled)
@@ -697,7 +697,7 @@ impl RouterMiddleware {
     }
 
     /// Get total calls processed.
-    pub fn total_calls(env: Env) -> u64 {
+    pub fn get_total_calls(env: Env) -> u64 {
         env.storage()
             .instance()
             .get(&DataKey::TotalCalls)
@@ -809,7 +809,7 @@ impl RouterMiddleware {
     /// `window_seconds` otherwise.  This ensures the view reflects the same
     /// window that enforcement uses, so integrators can accurately predict
     /// whether the next `pre_call` will succeed. (Issue #1317)
-    pub fn rate_limit_state(env: Env, route: String, caller: Address) -> Option<RateLimitState> {
+    pub fn get_rate_limit_state(env: Env, route: String, caller: Address) -> Option<RateLimitState> {
         let route_call_state: RouteCallState = env
             .storage()
             .instance()
@@ -848,7 +848,7 @@ impl RouterMiddleware {
         route: String,
         caller: Address,
     ) -> Option<RateLimitState> {
-        Self::rate_limit_state(env, route, caller)
+        Self::get_rate_limit_state(env, route, caller)
     }
 
     /// Get aggregated rate limit statistics for a route across all callers.
@@ -933,7 +933,7 @@ impl RouterMiddleware {
     }
 
     /// Returns the RouteConfig for a specific route.
-    pub fn route_config(env: Env, route: String) -> Option<RouteConfig> {
+    pub fn get_route_config(env: Env, route: String) -> Option<RouteConfig> {
         env.storage().instance().get(&DataKey::RouteConfig(route))
     }
 
@@ -958,7 +958,7 @@ impl RouterMiddleware {
     ///
     /// The recomputed state is **not** persisted; storage is only mutated by
     /// `pre_call` (via `check_and_transition`). (Issue #1318)
-    pub fn circuit_breaker_state(env: Env, route: String) -> Option<CircuitBreakerState> {
+    pub fn get_circuit_breaker_state(env: Env, route: String) -> Option<CircuitBreakerState> {
         let route_call_state: RouteCallState = env
             .storage()
             .instance()
@@ -989,7 +989,7 @@ impl RouterMiddleware {
     }
 
     /// Get current admin.
-    pub fn admin(env: Env) -> Result<Address, MiddlewareError> {
+    pub fn get_admin(env: Env) -> Result<Address, MiddlewareError> {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
@@ -1322,7 +1322,7 @@ mod tests {
         let caller = Address::generate(&env);
 
         assert!(client.try_pre_call(&caller, &route).is_ok());
-        let state_after_first = client.rate_limit_state(&route, &caller).unwrap();
+        let state_after_first = client.get_rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state_after_first.calls_in_window, 1);
 
         // Disable the route
@@ -1333,15 +1333,15 @@ mod tests {
             Err(Ok(MiddlewareError::RouteDisabled))
         );
 
-        let state_after_rejected = client.rate_limit_state(&route, &caller).unwrap();
+        let state_after_rejected = client.get_rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state_after_rejected.calls_in_window, 1);
 
-        assert_eq!(client.total_calls(), 1);
+        assert_eq!(client.get_total_calls(), 1);
 
         // Re-enable the route — no stale state should affect the next call
         client.configure_route(&admin, &route, &5, &60, &true, &0, &0, &0, &0);
         assert!(client.try_pre_call(&caller, &route).is_ok());
-        let state_after_reenable = client.rate_limit_state(&route, &caller).unwrap();
+        let state_after_reenable = client.get_rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state_after_reenable.calls_in_window, 2);
     }
 
@@ -1353,7 +1353,7 @@ mod tests {
 
         let caller = Address::generate(&env);
         client.pre_call(&caller, &route);
-        assert_eq!(client.total_calls(), 1);
+        assert_eq!(client.get_total_calls(), 1);
 
         client.set_global_enabled(&admin, &false);
 
@@ -1361,8 +1361,8 @@ mod tests {
             client.try_pre_call(&caller, &route),
             Err(Ok(MiddlewareError::MiddlewareDisabled))
         );
-        assert_eq!(client.total_calls(), 1);
-        let state = client.rate_limit_state(&route, &caller).unwrap();
+        assert_eq!(client.get_total_calls(), 1);
+        let state = client.get_rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state.calls_in_window, 1);
     }
 
@@ -1373,7 +1373,7 @@ mod tests {
         let route = String::from_str(&env, "oracle/get_price");
         let result = client.try_pre_call(&caller, &route);
         assert!(result.is_ok());
-        assert_eq!(client.total_calls(), 1);
+        assert_eq!(client.get_total_calls(), 1);
     }
 
     #[test]
@@ -1567,10 +1567,10 @@ mod tests {
 
         let caller = Address::generate(&env);
         client.pre_call(&caller, &route);
-        assert_eq!(client.total_calls(), 1);
+        assert_eq!(client.get_total_calls(), 1);
 
         let _ = client.try_pre_call(&caller, &route);
-        assert_eq!(client.total_calls(), 1);
+        assert_eq!(client.get_total_calls(), 1);
     }
 
     #[test]
@@ -1737,7 +1737,7 @@ mod tests {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "oracle/get_price");
         client.configure_route(&admin, &route, &0, &0, &true, &3, &0, &0, &0);
-        assert_eq!(client.circuit_breaker_state(&route), None);
+        assert_eq!(client.get_circuit_breaker_state(&route), None);
     }
 
     #[test]
@@ -1747,7 +1747,7 @@ mod tests {
         client.configure_route(&admin, &route, &0, &0, &true, &3, &0, &0, &0);
         let caller = Address::generate(&env);
         client.post_call(&caller, &route, &false);
-        let state = client.circuit_breaker_state(&route).unwrap();
+        let state = client.get_circuit_breaker_state(&route).unwrap();
         assert_eq!(state.failure_count, 1);
         assert!(!state.is_open);
     }
@@ -1760,7 +1760,7 @@ mod tests {
         let caller = Address::generate(&env);
         client.post_call(&caller, &route, &false);
         client.post_call(&caller, &route, &false);
-        let state = client.circuit_breaker_state(&route).unwrap();
+        let state = client.get_circuit_breaker_state(&route).unwrap();
         assert!(state.is_open);
         assert!(state.opened_at > 0);
     }
@@ -1772,9 +1772,9 @@ mod tests {
         client.configure_route(&admin, &route, &0, &0, &true, &1, &0, &0, &0);
         let caller = Address::generate(&env);
         client.post_call(&caller, &route, &false);
-        assert!(client.circuit_breaker_state(&route).unwrap().is_open);
+        assert!(client.get_circuit_breaker_state(&route).unwrap().is_open);
         client.reset_circuit_breaker(&admin, &route);
-        let state = client.circuit_breaker_state(&route).unwrap();
+        let state = client.get_circuit_breaker_state(&route).unwrap();
         assert!(!state.is_open);
     }
 
@@ -1796,7 +1796,7 @@ mod tests {
         client.post_call(&caller, &route, &false);
 
         // Immediately: still open.
-        let state_open = client.circuit_breaker_state(&route).unwrap();
+        let state_open = client.get_circuit_breaker_state(&route).unwrap();
         assert!(state_open.is_open, "circuit must be open after failure");
         assert!(!state_open.is_half_open);
 
@@ -1804,7 +1804,7 @@ mod tests {
         env.ledger().with_mut(|l| l.timestamp += 61);
 
         // circuit_breaker_state must now report the recovered (half-open) state.
-        let state_after_recovery = client.circuit_breaker_state(&route).unwrap();
+        let state_after_recovery = client.get_circuit_breaker_state(&route).unwrap();
         assert!(
             !state_after_recovery.is_open,
             "circuit_breaker_state must report is_open: false after recovery window elapsed"
@@ -1830,8 +1830,8 @@ mod tests {
         env.ledger().with_mut(|l| l.timestamp += 61);
 
         // Read the view twice — must return the same half-open result each time.
-        let first_read = client.circuit_breaker_state(&route).unwrap();
-        let second_read = client.circuit_breaker_state(&route).unwrap();
+        let first_read = client.get_circuit_breaker_state(&route).unwrap();
+        let second_read = client.get_circuit_breaker_state(&route).unwrap();
         assert!(!first_read.is_open);
         assert!(first_read.is_half_open);
         assert_eq!(first_read, second_read);
@@ -1851,7 +1851,7 @@ mod tests {
         // Advance time but not past the 60 s recovery window.
         env.ledger().with_mut(|l| l.timestamp += 30);
 
-        let state = client.circuit_breaker_state(&route).unwrap();
+        let state = client.get_circuit_breaker_state(&route).unwrap();
         assert!(
             state.is_open,
             "circuit must still be reported as open before the recovery window elapses"
@@ -1873,7 +1873,7 @@ mod tests {
         client.post_call(&caller, &route, &false);
         env.ledger().with_mut(|l| l.timestamp += 9999);
 
-        let state = client.circuit_breaker_state(&route).unwrap();
+        let state = client.get_circuit_breaker_state(&route).unwrap();
         assert!(
             state.is_open,
             "with recovery_window_seconds=0, circuit must never auto-recover"
@@ -1928,12 +1928,12 @@ mod tests {
             client.pre_call(&caller, &route);
         }
 
-        let state_within_window = client.rate_limit_state(&route, &caller).unwrap();
+        let state_within_window = client.get_rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state_within_window.calls_in_window, 3);
 
         env.ledger().set_timestamp(env.ledger().timestamp() + 61);
 
-        let state_after_window = client.rate_limit_state(&route, &caller).unwrap();
+        let state_after_window = client.get_rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state_after_window.calls_in_window, 0);
         assert_eq!(state_after_window.window_start, env.ledger().timestamp());
     }
@@ -1950,12 +1950,12 @@ mod tests {
         client.pre_call(&caller, &route);
         client.pre_call(&caller, &route);
 
-        let state = client.rate_limit_state(&route, &caller).unwrap();
+        let state = client.get_rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state.calls_in_window, 2);
 
         env.ledger().set_timestamp(env.ledger().timestamp() + 30);
 
-        let state_still_in_window = client.rate_limit_state(&route, &caller).unwrap();
+        let state_still_in_window = client.get_rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state_still_in_window.calls_in_window, 2);
         assert_eq!(
             state_still_in_window.window_start, state.window_start,
@@ -1986,7 +1986,7 @@ mod tests {
 
         let t0 = env.ledger().timestamp();
 
-        let mid_window = client.rate_limit_state(&route, &caller).unwrap();
+        let mid_window = client.get_rate_limit_state(&route, &caller).unwrap();
         assert_eq!(
             mid_window.calls_in_window, 3,
             "3 calls inside the 10 s override window"
@@ -1995,7 +1995,7 @@ mod tests {
         // Advance 15 s — past the 10 s override window but well before the 60 s route window.
         env.ledger().set_timestamp(t0 + 15);
 
-        let after_override_window = client.rate_limit_state(&route, &caller).unwrap();
+        let after_override_window = client.get_rate_limit_state(&route, &caller).unwrap();
         assert_eq!(
             after_override_window.calls_in_window, 0,
             "override window elapsed: rate_limit_state must report 0, not stale counts"
@@ -2086,7 +2086,7 @@ mod tests {
 
         client.post_call(&caller, &route, &false);
 
-        let state_when_open = client.circuit_breaker_state(&route).unwrap();
+        let state_when_open = client.get_circuit_breaker_state(&route).unwrap();
         assert!(state_when_open.is_open);
         assert_eq!(state_when_open.failure_count, 1);
 
@@ -2100,7 +2100,7 @@ mod tests {
         assert!(client.try_pre_call(&caller, &route).is_ok());
         client.post_call(&caller, &route, &true);
 
-        let state_after_recovery = client.circuit_breaker_state(&route).unwrap();
+        let state_after_recovery = client.get_circuit_breaker_state(&route).unwrap();
         assert!(!state_after_recovery.is_open);
         assert_eq!(state_after_recovery.failure_count, 0);
         assert_eq!(state_after_recovery.opened_at, 0);
@@ -2141,7 +2141,7 @@ mod tests {
         env.ledger().with_mut(|l| l.timestamp = t0 + 300);
 
         assert!(client.try_pre_call(&caller, &route).is_ok());
-        let state = client.rate_limit_state(&route, &caller).unwrap();
+        let state = client.get_rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state.calls_in_window, 1);
         assert_eq!(state.window_start, t0 + 300);
     }
@@ -2176,19 +2176,19 @@ mod tests {
     #[test]
     fn test_is_global_enabled_returns_true_by_default() {
         let (_env, _admin, client) = setup();
-        assert!(client.is_global_enabled());
+        assert!(client.get_global_enabled());
     }
 
     #[test]
     fn test_is_global_enabled_reflects_set_value() {
         let (_env, admin, client) = setup();
-        assert!(client.is_global_enabled());
+        assert!(client.get_global_enabled());
 
         client.set_global_enabled(&admin, &false);
-        assert!(!client.is_global_enabled());
+        assert!(!client.get_global_enabled());
 
         client.set_global_enabled(&admin, &true);
-        assert!(client.is_global_enabled());
+        assert!(client.get_global_enabled());
     }
 
     #[test]
@@ -2407,7 +2407,7 @@ mod tests {
         client.post_call(&caller, &route, &false);
         client.post_call(&caller, &route, &false);
 
-        let state_before_recovery = client.circuit_breaker_state(&route).unwrap();
+        let state_before_recovery = client.get_circuit_breaker_state(&route).unwrap();
         assert!(state_before_recovery.is_open);
         assert_eq!(state_before_recovery.failure_count, 2);
 
@@ -2416,7 +2416,7 @@ mod tests {
         assert!(client.try_pre_call(&caller, &route).is_ok());
         client.post_call(&caller, &route, &true);
 
-        let state_after_recovery = client.circuit_breaker_state(&route).unwrap();
+        let state_after_recovery = client.get_circuit_breaker_state(&route).unwrap();
         assert!(!state_after_recovery.is_open);
         assert_eq!(state_after_recovery.failure_count, 0);
         assert_eq!(state_after_recovery.opened_at, 0);
@@ -2433,7 +2433,7 @@ mod tests {
 
         client.post_call(&caller, &route, &false);
 
-        let state_open = client.circuit_breaker_state(&route).unwrap();
+        let state_open = client.get_circuit_breaker_state(&route).unwrap();
         assert!(state_open.is_open);
         assert_eq!(state_open.failure_count, 1);
         assert!(state_open.opened_at > 0);
@@ -2443,7 +2443,7 @@ mod tests {
         assert!(client.try_pre_call(&caller, &route).is_ok());
         client.post_call(&caller, &route, &true);
 
-        let state_recovered = client.circuit_breaker_state(&route).unwrap();
+        let state_recovered = client.get_circuit_breaker_state(&route).unwrap();
         assert!(!state_recovered.is_open, "is_open should be false");
         assert_eq!(
             state_recovered.failure_count, 0,
@@ -2487,7 +2487,7 @@ mod tests {
             "circuit_closed event must be emitted"
         );
 
-        let state = client.circuit_breaker_state(&route).unwrap();
+        let state = client.get_circuit_breaker_state(&route).unwrap();
         assert!(!state.is_open);
         assert!(!state.is_half_open);
         assert_eq!(state.failure_count, 0);
@@ -2575,7 +2575,7 @@ mod tests {
         let caller = Address::generate(&env);
         assert!(client.try_pre_call(&caller, &route).is_ok());
         assert!(client.try_pre_call(&caller, &route).is_ok());
-        assert_eq!(client.total_calls(), 2);
+        assert_eq!(client.get_total_calls(), 2);
     }
 
     #[test]
@@ -2617,7 +2617,7 @@ mod tests {
         assert!(client.try_pre_call(&caller, &route).is_ok());
         assert!(client.try_pre_call(&caller, &route).is_ok());
         assert!(client.try_pre_call(&caller, &route).is_ok());
-        assert_eq!(client.total_calls(), 3);
+        assert_eq!(client.get_total_calls(), 3);
     }
 
     #[test]
@@ -2713,7 +2713,7 @@ mod tests {
         env.ledger().set_timestamp(10000);
 
         assert!(client.try_pre_call(&caller, &route).is_ok());
-        let state = client.rate_limit_state(&route, &caller).unwrap();
+        let state = client.get_rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state.calls_in_window, 1);
         assert_eq!(state.window_start, 10000);
     }
@@ -2735,7 +2735,7 @@ mod tests {
         env.ledger().with_mut(|l| l.timestamp = t0 + 60);
 
         assert!(client.try_pre_call(&caller, &route).is_ok());
-        let state = client.rate_limit_state(&route, &caller).unwrap();
+        let state = client.get_rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state.calls_in_window, 1);
         assert_eq!(state.window_start, t0 + 60);
     }
@@ -2758,7 +2758,7 @@ mod tests {
             Err(Ok(MiddlewareError::RateLimitExceeded))
         );
 
-        let state = client.rate_limit_state(&route, &caller).unwrap();
+        let state = client.get_rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state.calls_in_window, 3);
         assert_eq!(state.window_start, ts);
     }
@@ -2781,8 +2781,8 @@ mod tests {
         assert!(client.try_pre_call(&caller_a, &route).is_ok());
         assert!(client.try_pre_call(&caller_b, &route).is_ok());
 
-        let state_a = client.rate_limit_state(&route, &caller_a).unwrap();
-        let state_b = client.rate_limit_state(&route, &caller_b).unwrap();
+        let state_a = client.get_rate_limit_state(&route, &caller_a).unwrap();
+        let state_b = client.get_rate_limit_state(&route, &caller_b).unwrap();
         assert_eq!(state_a.calls_in_window, 1);
         assert_eq!(state_b.calls_in_window, 1);
     }
@@ -2800,7 +2800,7 @@ mod tests {
         env.ledger().set_timestamp(9000);
 
         assert!(client.try_pre_call(&caller, &route).is_ok());
-        let state = client.rate_limit_state(&route, &caller).unwrap();
+        let state = client.get_rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state.calls_in_window, 2);
         assert_eq!(state.window_start, 10000);
     }
