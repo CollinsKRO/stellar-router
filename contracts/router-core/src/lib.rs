@@ -602,6 +602,11 @@ impl RouterCore {
         caller.require_auth();
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, RouterError)?;
 
+        // Validate address is not the zero address (issue #1278)
+        if Self::is_zero_address(&env, &new_address) {
+            return Err(RouterError::InvalidAddress);
+        }
+
         let mut entry: RouteEntry = env
             .storage()
             .instance()
@@ -756,26 +761,25 @@ impl RouterCore {
         let mut result = router_common::BatchResult::new(&env);
 
         if fail_fast {
-            let mut seen = Vec::new(&env);
+            // Issue #1280: use Map<String, bool> as an O(1) set instead of
+            // Vec::contains (which is O(n)) for within-batch duplicate detection.
+            let mut seen: soroban_sdk::Map<String, bool> = soroban_sdk::Map::new(&env);
             for (index, route) in routes.iter().enumerate() {
                 let idx = index as u32;
-                if seen.contains(&route.name) {
+                // Detect within-batch duplicates in O(1) via map lookup.
+                if seen.contains_key(route.name.clone()) {
                     result.record_failure(idx, router_common::BatchItemError::AlreadyExists);
                     return Ok(result);
                 }
+                // validate_route_name checks both name format AND whether the
+                // route/alias already exists in storage — the previous redundant
+                // `has(&DataKey::Route(...))` block after this call has been
+                // removed (issue #1279: it was unreachable).
                 if let Err(err) = Self::validate_route_name(&env, &route.name) {
                     result.record_failure(idx, Self::router_error_to_batch(&env, err));
                     return Ok(result);
                 }
-                if env
-                    .storage()
-                    .instance()
-                    .has(&DataKey::Route(route.name.clone()))
-                {
-                    result.record_failure(idx, router_common::BatchItemError::AlreadyExists);
-                    return Ok(result);
-                }
-                seen.push_back(route.name.clone());
+                seen.set(route.name.clone(), true);
             }
 
             for (index, route) in routes.iter().enumerate() {
@@ -1600,6 +1604,10 @@ impl RouterCore {
         env.storage()
             .instance()
             .set(&DataKey::MaxRoutes, &max_routes);
+        env.events().publish(
+            (Symbol::new(&env, "max_routes_updated"),),
+            max_routes,
+        );
         Ok(())
     }
 
@@ -1940,6 +1948,11 @@ impl RouterCore {
 
         // Re-rank routes using the new weights.
         Self::recompute_best_route(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "scoring_weights_updated"),),
+            (weights.liquidity_weight, weights.reliability_weight, weights.fee_divisor),
+        );
 
         Ok(())
     }
@@ -2469,7 +2482,7 @@ impl RouterCore {
     }
 
     fn validate_metadata(meta: &RouteMetadata) -> Result<(), RouterError> {
-        if meta.description.len() > 256 || meta.tags.len() > 5 {
+        if meta.description.len() > MAX_METADATA_DESCRIPTION_LEN || meta.tags.len() > MAX_METADATA_TAGS {
             return Err(RouterError::InvalidMetadata);
         }
         for tag in meta.tags.iter() {
@@ -6601,7 +6614,7 @@ mod tests {
     /// is_zero_address. This test confirms that zero-address validation is
     /// only enforced at registration time, not when updating an existing route.
     #[test]
-    fn test_update_route_allows_zero_address() {
+    fn test_update_route_rejects_zero_address() {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
         let valid_addr = Address::generate(&env);
@@ -6613,10 +6626,16 @@ mod tests {
         // Register with a valid address first
         client.register_route(&admin, &name, &valid_addr, &None);
 
-        // update_route does not call is_zero_address, so this should succeed
-        // (though it's semantically questionable to point a route at the zero address)
-        client.update_route(&admin, &name, &zero_addr);
-        assert_eq!(client.resolve(&name), zero_addr);
+        // update_route must reject the zero address (issue #1278)
+        let result = client.try_update_route(&admin, &name, &zero_addr);
+        assert_eq!(
+            result,
+            Err(Ok(RouterError::InvalidAddress)),
+            "update_route should reject zero address"
+        );
+
+        // Original address must still be intact
+        assert_eq!(client.resolve(&name), valid_addr);
     }
 
     /// Verifies that a valid address (not the zero address) is accepted.
