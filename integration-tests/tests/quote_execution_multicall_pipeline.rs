@@ -191,7 +191,7 @@ fn test_pipeline_all_contracts_deployed() {
 
     // Middleware: Should have zero total calls
     assert_eq!(
-        s.middleware.total_calls(),
+        s.middleware.get_total_calls(),
         0,
         "middleware should have zero calls initially"
     );
@@ -307,7 +307,7 @@ fn test_pipeline_middleware_pre_call() {
     );
 
     // Verify call was counted
-    assert_eq!(s.middleware.total_calls(), 1);
+    assert_eq!(s.middleware.get_total_calls(), 1);
 
     println!("\n✓ Middleware pre_call passed");
 }
@@ -510,14 +510,14 @@ fn test_quote_to_execution_to_multicall_pipeline() {
     // ── Phase 5: Verify Rate Limiting After Batch ───────────────────────
 
     println!("\nPhase 5: Testing rate limiting after batch...");
-    let initial_calls = s.middleware.total_calls();
+    let initial_calls = s.middleware.get_total_calls();
 
     // Try to make more calls to hit the rate limit
     for _ in 0..10 {
         let _ = s.middleware.try_pre_call(&s.user, &route);
     }
 
-    let final_calls = s.middleware.total_calls();
+    let final_calls = s.middleware.get_total_calls();
     println!(
         "  ✓ Total calls tracked: {} → {}",
         initial_calls, final_calls

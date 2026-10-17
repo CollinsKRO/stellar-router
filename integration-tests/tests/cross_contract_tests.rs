@@ -171,7 +171,7 @@ fn test_middleware_pre_call_passes_for_enabled_route() {
         .configure_route(&s.admin, &route, &10, &60, &true, &0, &0, &0, &0);
 
     s.middleware.pre_call(&caller, &route);
-    assert_eq!(s.middleware.total_calls(), 1);
+    assert_eq!(s.middleware.get_total_calls(), 1);
 }
 
 #[test]
@@ -249,7 +249,7 @@ fn test_full_resolution_path() {
     s.middleware.post_call(&caller, &route, &true);
 
     // Step 7: verify counters
-    assert_eq!(s.middleware.total_calls(), 1);
+    assert_eq!(s.middleware.get_total_calls(), 1);
     assert_eq!(s.core.total_routed(), 1);
 }
 
