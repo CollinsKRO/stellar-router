@@ -1,8 +1,12 @@
 //! Token-bucket rate limiter middleware.
 //!
-//! Limits requests per IP address (or per `X-Api-Key` header when present).
-//! Configuration is driven by [`RateLimitConfig`] which can be set via CLI
-//! flags or environment variables.
+//! Limits requests per IP address. The client cannot influence its own
+//! bucket key: an unauthenticated, client-supplied override (e.g. a header)
+//! would let an attacker pick a fresh key per request and dodge the limit
+//! entirely, and would also let them evict every other client's bucket
+//! once `max_buckets` is exceeded. Configuration is driven by
+//! [`RateLimitConfig`] which can be set via CLI flags or environment
+//! variables.
 //!
 //! Returns HTTP 429 with a JSON body and `Retry-After` header when the limit
 //! is exceeded.
@@ -142,20 +146,26 @@ struct RateLimitError {
     retry_after_secs: u64,
 }
 
-/// Axum middleware that enforces per-IP (or per-API-key) rate limits.
+/// The rate-limit bucket key for a request: always the remote IP.
+///
+/// This must not be influenced by anything the client supplies (such as an
+/// `X-Api-Key` header) — otherwise a client can dodge the limit by rotating
+/// the header per request, and can also evict every other client's bucket
+/// once `max_buckets` is exceeded (see `RateLimiter::check`). `req` is
+/// intentionally unused: it's kept in the signature so callers (and tests)
+/// can't accidentally key on anything from it.
+fn bucket_key(_req: &Request<Body>, addr: SocketAddr) -> String {
+    addr.ip().to_string()
+}
+
+/// Axum middleware that enforces per-IP rate limits.
 pub async fn rate_limit_middleware(
     State(limiter): State<RateLimiter>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    // Prefer X-Api-Key as the rate-limit key; fall back to remote IP.
-    let key = req
-        .headers()
-        .get("x-api-key")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| addr.ip().to_string());
+    let key = bucket_key(&req, addr);
 
     if limiter.check(&key) {
         next.run(req).await
@@ -270,6 +280,51 @@ mod tests {
 
         assert!(rl.buckets.contains_key("three"));
         assert!(!rl.buckets.contains_key("one"));
+    }
+
+    // ── Issue #1432: bucket key must not be influenced by X-Api-Key ─────────
+
+    #[test]
+    fn bucket_key_ignores_x_api_key_header() {
+        let addr: SocketAddr = "203.0.113.7:4321".parse().unwrap();
+
+        let req_a = Request::builder()
+            .header("x-api-key", "client-a-key")
+            .body(Body::empty())
+            .unwrap();
+        let req_b = Request::builder()
+            .header("x-api-key", "client-b-key")
+            .body(Body::empty())
+            .unwrap();
+        let req_none = Request::builder().body(Body::empty()).unwrap();
+
+        let key_a = bucket_key(&req_a, addr);
+        let key_b = bucket_key(&req_b, addr);
+        let key_none = bucket_key(&req_none, addr);
+
+        assert_eq!(key_a, key_b);
+        assert_eq!(key_a, key_none);
+        assert_eq!(key_a, "203.0.113.7");
+    }
+
+    #[test]
+    fn same_ip_different_api_keys_share_one_bucket() {
+        let rl = limiter(1, 60);
+        let addr: SocketAddr = "198.51.100.9:1234".parse().unwrap();
+
+        let req_a = Request::builder()
+            .header("x-api-key", "rotating-key-1")
+            .body(Body::empty())
+            .unwrap();
+        let req_b = Request::builder()
+            .header("x-api-key", "rotating-key-2")
+            .body(Body::empty())
+            .unwrap();
+
+        assert!(rl.check(&bucket_key(&req_a, addr)));
+        // Same IP, different X-Api-Key: must hit the same bucket and be
+        // rejected, not bypass the limit with a "fresh" key.
+        assert!(!rl.check(&bucket_key(&req_b, addr)));
     }
 
     // config_from_env reads process-global env vars, so tests that touch them

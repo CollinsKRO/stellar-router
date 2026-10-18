@@ -19,6 +19,7 @@ use axum::{
 };
 use clap::Parser;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{info, info_span, warn, Instrument};
 
@@ -148,13 +149,22 @@ async fn main() -> Result<()> {
         .route("/ws", get(websocket::ws_handler))
         .route("/openapi.json", get(openapi_json))
         .merge(docs)
-        .layer(middleware::from_fn(request_id_middleware))
-        .layer(cors)
-        .layer(DefaultBodyLimit::max(1024 * 1024))
+        // Layers are applied outermost-last: the last `.layer()` call wraps
+        // everything added before it, so it sees every request first and
+        // every response last. `rate_limit_middleware` must be innermost
+        // (added first here) so that `request_id_middleware` and `cors`
+        // wrap it — otherwise a 429 it returns bypasses CORS entirely
+        // (browsers see an opaque CORS failure instead of the 429 body) and
+        // never gets an `x-request-id`, and CORS preflight `OPTIONS`
+        // requests get counted against the limit before `cors` can answer
+        // them.
         .layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit::rate_limit_middleware,
         ))
+        .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(cors)
+        .layer(middleware::from_fn(request_id_middleware))
         .with_state(state);
 
     let addr: SocketAddr = args
@@ -167,15 +177,27 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     let drain_timeout = std::time::Duration::from_secs(args.shutdown_timeout_secs);
+
+    // The drain timeout must only start counting once the shutdown signal
+    // fires, not from server startup. `shutdown_signal()` resolving also
+    // notifies `shutdown_started`, so `drain_deadline` stays pending (never
+    // reaching its `sleep`) until a signal actually arrives.
+    let shutdown_started = Arc::new(tokio::sync::Notify::new());
+    let shutdown_started_tx = shutdown_started.clone();
+    let shutdown = async move {
+        shutdown_signal().await;
+        shutdown_started_tx.notify_one();
+    };
+
     let serve = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal());
+    .with_graceful_shutdown(shutdown);
 
-    match tokio::time::timeout(drain_timeout, serve).await {
-        Ok(result) => result?,
-        Err(_) => {
+    tokio::select! {
+        result = serve => result?,
+        _ = drain_deadline(shutdown_started, drain_timeout) => {
             warn!(
                 "Graceful shutdown drain timed out after {}s, forcing exit",
                 args.shutdown_timeout_secs
@@ -184,6 +206,15 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Resolves only after `shutdown_started` has fired *and* `drain_timeout`
+/// has subsequently elapsed — i.e. it bounds only the post-signal drain
+/// period, never the server's overall uptime. Before any shutdown signal,
+/// this future stays pending forever (it never reaches the `sleep`).
+async fn drain_deadline(shutdown_started: Arc<tokio::sync::Notify>, drain_timeout: std::time::Duration) {
+    shutdown_started.notified().await;
+    tokio::time::sleep(drain_timeout).await;
 }
 
 /// Serves the generated OpenAPI spec as JSON at `/openapi.json`.
