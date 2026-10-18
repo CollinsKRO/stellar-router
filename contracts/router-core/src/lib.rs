@@ -76,6 +76,14 @@ pub const MAX_METADATA_DESCRIPTION_LEN: u32 = 256;
 /// Maximum allowed number of tags in a [`RouteMetadata`].
 pub const MAX_METADATA_TAGS: u32 = 5;
 
+/// Maximum allowed length (in bytes) for a single tag in a [`RouteMetadata`].
+///
+/// This matches the size of the fixed stack buffer tags are copied into for
+/// whitespace-only validation, so a tag longer than this must be rejected
+/// with [`RouterError::InvalidMetadata`] *before* the copy instead of
+/// panicking on an out-of-range slice index.
+pub const MAX_METADATA_TAG_LEN: usize = 256;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -393,7 +401,7 @@ impl RouterCore {
             }
             for tag in meta.tags.iter() {
                 let tlen = tag.len() as usize;
-                if tlen == 0 {
+                if tlen == 0 || tlen > MAX_METADATA_TAG_LEN {
                     return Err(RouterError::InvalidMetadata);
                 }
                 let mut tbuf = [0u8; 256];
@@ -1332,7 +1340,7 @@ impl RouterCore {
             }
             for tag in meta.tags.iter() {
                 let tlen = tag.len() as usize;
-                if tlen == 0 {
+                if tlen == 0 || tlen > MAX_METADATA_TAG_LEN {
                     return Err(RouterError::InvalidMetadata);
                 }
                 let mut tbuf = [0u8; 256];
@@ -2519,7 +2527,7 @@ impl RouterCore {
         }
         for tag in meta.tags.iter() {
             let tlen = tag.len() as usize;
-            if tlen == 0 {
+            if tlen == 0 || tlen > MAX_METADATA_TAG_LEN {
                 return Err(RouterError::InvalidMetadata);
             }
             let mut tbuf = [0u8; 256];
@@ -7183,5 +7191,72 @@ mod tests {
             Err(Ok(RouterError::Unauthorized))
         );
         assert_eq!(client.resolve(&alias), addr);
+    }
+
+    // ── Issue #1434: tags longer than MAX_METADATA_TAG_LEN must error, not panic ──
+
+    #[test]
+    fn test_register_route_rejects_tag_over_max_len() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+
+        let long_tag = alloc::string::String::from("a").repeat(MAX_METADATA_TAG_LEN + 1);
+        let metadata = RouteMetadata {
+            description: String::from_str(&env, "desc"),
+            tags: vec![&env, String::from_str(&env, &long_tag)],
+            owner: admin.clone(),
+        };
+
+        let result = client.try_register_route(&admin, &name, &addr, &Some(metadata));
+        assert_eq!(result, Err(Ok(RouterError::InvalidMetadata)));
+    }
+
+    #[test]
+    fn test_register_route_accepts_tag_at_exactly_max_len() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+
+        let max_tag = alloc::string::String::from("a").repeat(MAX_METADATA_TAG_LEN);
+        let metadata = RouteMetadata {
+            description: String::from_str(&env, "desc"),
+            tags: vec![&env, String::from_str(&env, &max_tag)],
+            owner: admin.clone(),
+        };
+
+        client.register_route(&admin, &name, &addr, &Some(metadata));
+        let stored = client.get_metadata(&name).unwrap();
+        assert_eq!(stored.tags.len(), 1);
+    }
+
+    #[test]
+    fn test_update_metadata_rejects_tag_over_max_len() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr, &None);
+
+        let long_tag = alloc::string::String::from("a").repeat(MAX_METADATA_TAG_LEN + 1);
+        let metadata = RouteMetadata {
+            description: String::from_str(&env, "desc"),
+            tags: vec![&env, String::from_str(&env, &long_tag)],
+            owner: admin.clone(),
+        };
+
+        let result = client.try_update_metadata(&admin, &name, &metadata);
+        assert_eq!(result, Err(Ok(RouterError::InvalidMetadata)));
+    }
+
+    #[test]
+    fn test_add_route_tag_rejects_tag_over_max_len() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr, &None);
+
+        let long_tag = alloc::string::String::from("a").repeat(MAX_METADATA_TAG_LEN + 1);
+        let result = client.try_add_route_tag(&admin, &name, &String::from_str(&env, &long_tag));
+        assert_eq!(result, Err(Ok(RouterError::InvalidMetadata)));
     }
 }

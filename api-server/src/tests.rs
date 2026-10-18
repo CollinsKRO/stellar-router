@@ -925,3 +925,113 @@ async fn test_build_cors_layer_mixed_invalid_valid_origins() {
         "valid origin should work even when invalid entries are present"
     );
 }
+
+// ── Issue #1429: drain_deadline must bound only the post-signal drain,
+// not the server's overall uptime.
+
+#[tokio::test]
+async fn test_drain_deadline_never_fires_without_a_shutdown_signal() {
+    let shutdown_started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let drain_timeout = std::time::Duration::from_millis(30);
+
+    tokio::select! {
+        _ = crate::drain_deadline(shutdown_started, drain_timeout) => {
+            panic!("drain_deadline must not fire before a shutdown signal, no matter how long it waits");
+        }
+        _ = tokio::time::sleep(std::time::Duration::from_millis(150)) => {}
+    }
+}
+
+#[tokio::test]
+async fn test_drain_deadline_fires_drain_timeout_after_signal() {
+    let shutdown_started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let drain_timeout = std::time::Duration::from_millis(20);
+
+    shutdown_started.notify_one();
+
+    let start = tokio::time::Instant::now();
+    crate::drain_deadline(shutdown_started, drain_timeout).await;
+    assert!(
+        start.elapsed() >= drain_timeout,
+        "drain_deadline should wait out the full drain_timeout once signalled"
+    );
+}
+
+// ── Issue #1430: rate-limited (429) responses must still carry CORS headers
+// and x-request-id, which requires request_id_middleware and cors to wrap
+// rate_limit_middleware rather than the other way around.
+
+fn test_app_with_full_layer_stack(max_requests: u32, origins: &[String]) -> Router {
+    let rate_limiter = RateLimiter::new(RateLimitConfig {
+        max_requests,
+        ..RateLimitConfig::default()
+    });
+    let state = AppState::new(
+        "http://localhost:1".to_string(),
+        "".to_string(),
+        "".to_string(),
+        rate_limiter,
+        10,
+    );
+
+    let cors = crate::build_cors_layer(origins);
+
+    Router::new()
+        .route("/health", get(handlers::health))
+        // Mirrors the production layer order in `main.rs`: rate_limit_middleware
+        // must be innermost so request_id_middleware and cors wrap it.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::rate_limit::rate_limit_middleware,
+        ))
+        .layer(cors)
+        .layer(middleware::from_fn(crate::request_id_middleware))
+        .with_state(state)
+}
+
+#[tokio::test]
+async fn test_rate_limited_response_includes_request_id() {
+    let app = test_app_with_full_layer_stack(0, &[]);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        resp.headers().get("x-request-id").is_some(),
+        "429 response must carry x-request-id"
+    );
+}
+
+#[tokio::test]
+async fn test_rate_limited_response_includes_cors_header_for_allowed_origin() {
+    let origins = vec!["https://example.com".to_string()];
+    let app = test_app_with_full_layer_stack(0, &origins);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .header("origin", "https://example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        resp.headers()
+            .get("access-control-allow-origin")
+            .map(|h| h.to_str().unwrap()),
+        Some("https://example.com"),
+        "429 response to an allowed origin must carry access-control-allow-origin"
+    );
+}
