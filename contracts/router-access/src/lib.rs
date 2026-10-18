@@ -31,7 +31,7 @@ pub enum DataKey {
     RoleMemberCount(String), // role -> u32 (active members)
 
     AddressRoles(Address), // address -> Vec<String>
-    RoleExpiry(String, Address),
+    RoleExpiry(String, Address), // (role, address) -> expiry timestamp (u64::MAX = no expiry)
     RoleParent(String), // child role -> parent role
     AllRoles,           // Vec<String> — all roles ever defined in the system
 
@@ -557,52 +557,13 @@ impl RouterAccess {
         // Remove grant from source (including member counters/lists).
         Self::deactivate_role_grant(&env, &role, &from);
 
-        // Grant to destination with same expiry timestamp.
-
         // Track this role in AllRoles if it's the first time we've seen it.
         Self::track_role_in_all_roles(&env, &role)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::HasRole(role.clone(), to.clone()), &true);
-
-        let mut members_to: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::RoleMembers(role.clone()))
-            .unwrap_or_else(|| Vec::new(&env));
-        if !members_to.iter().any(|a| a == to) {
-            members_to.push_back(to.clone());
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::RoleMembers(role.clone()), &members_to);
-
-        let mut roles_to: Vec<String> = env
-            .storage()
-            .instance()
-            .get(&DataKey::AddressRoles(to.clone()))
-            .unwrap_or_else(|| Vec::new(&env));
-        if !roles_to.iter().any(|r| r == role) {
-            roles_to.push_back(role.clone());
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::AddressRoles(to.clone()), &roles_to);
-
-        let key_to = DataKey::RoleExpiry(role.clone(), to.clone());
-        env.storage().instance().set(&key_to, &expiry);
-
-        // Since from was active and we preserve expiry, destination should become active too.
-        let current: u32 = env
-            .storage()
-            .instance()
-            .get::<DataKey, u32>(&DataKey::RoleMemberCount(role.clone()))
-            .unwrap_or(0u32);
-        let new_count = current.saturating_add(1);
-        env.storage()
-            .instance()
-            .set(&DataKey::RoleMemberCount(role.clone()), &new_count);
+        // Grant to destination with same expiry timestamp. `to` was just
+        // verified above to not currently have the role active, so it is
+        // always transitioning from inactive to active here.
+        Self::activate_role_grant(&env, &role, &to, expiry, false);
 
         env.events().publish(
             (Symbol::new(&env, router_common::EVENT_ROLE_GRANTED),),
@@ -652,6 +613,9 @@ impl RouterAccess {
             .ok_or(AccessError::NotInitialized)
     }
 
+    /// Force-expires `target`'s grant of `role`, identical in effect to letting the
+    /// grant's expiry lapse naturally. Unlike `revoke_role`, only the super-admin
+    /// may call this (not a per-role `RoleAdmin`).
     pub fn expire_role(
         env: Env,
         caller: Address,
@@ -730,6 +694,67 @@ impl RouterAccess {
         env.storage()
             .instance()
             .remove(&DataKey::RoleExpiry(role.clone(), target.clone()));
+    }
+
+    /// Activates `role` for `account`: sets `HasRole`, adds `account` to
+    /// `RoleMembers(role)` and `role` to `AddressRoles(account)` if not
+    /// already present, writes `RoleExpiry(role, account)`, and bumps
+    /// `RoleMemberCount` unless `was_already_active` is `true`. Shared by
+    /// `grant_role_internal` and `transfer_role_membership` so both leave
+    /// identical, consistent bookkeeping behind.
+    ///
+    /// Callers must have already validated their own pre-conditions
+    /// (blacklist checks, cap checks, duplicate-grant checks) before calling
+    /// this — it performs the storage writes unconditionally.
+    fn activate_role_grant(
+        env: &Env,
+        role: &String,
+        account: &Address,
+        expiry_timestamp: u64,
+        was_already_active: bool,
+    ) {
+        env.storage()
+            .instance()
+            .set(&DataKey::HasRole(role.clone(), account.clone()), &true);
+
+        let mut members: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::RoleMembers(role.clone()))
+            .unwrap_or_else(|| Vec::new(env));
+        if !members.iter().any(|a| a == *account) {
+            members.push_back(account.clone());
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::RoleMembers(role.clone()), &members);
+
+        if !was_already_active {
+            let count: u32 = env
+                .storage()
+                .instance()
+                .get::<DataKey, u32>(&DataKey::RoleMemberCount(role.clone()))
+                .unwrap_or(0u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::RoleMemberCount(role.clone()), &count.saturating_add(1));
+        }
+
+        let mut roles: Vec<String> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AddressRoles(account.clone()))
+            .unwrap_or_else(|| Vec::new(env));
+        if !roles.iter().any(|r| r == *role) {
+            roles.push_back(role.clone());
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::AddressRoles(account.clone()), &roles);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RoleExpiry(role.clone(), account.clone()), &expiry_timestamp);
     }
 
     /// Track a role name in the AllRoles list if it hasn't been seen before.
@@ -881,17 +906,16 @@ impl RouterAccess {
         // Track this role in AllRoles if it's the first time we've seen it
         Self::track_role_in_all_roles(env, role)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::HasRole(role.clone(), account.clone()), &true);
-
-        let mut members: Vec<Address> = env
+        // Enforce MaxGrantsPerRole before adding a brand-new member. Not
+        // relevant when `account` is already recorded in RoleMembers (a
+        // fresh grant, an expiry update, or a re-grant of a previously
+        // expired assignment all keep the same membership-list entry).
+        let already_a_member: Vec<Address> = env
             .storage()
             .instance()
             .get(&DataKey::RoleMembers(role.clone()))
             .unwrap_or_else(|| Vec::new(env));
-        if !members.iter().any(|a| a == *account) {
-            // Enforce MaxGrantsPerRole before adding a new member.
+        if !already_a_member.iter().any(|a| a == *account) {
             let (_, max_grants) = Self::role_limits_internal(env);
             let current_count: u32 = env
                 .storage()
@@ -901,42 +925,13 @@ impl RouterAccess {
             if current_count >= max_grants {
                 return Err(AccessError::MaxGrantsPerRoleExceeded);
             }
-            members.push_back(account.clone());
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::RoleMembers(role.clone()), &members);
-
-        // Increment RoleMemberCount when the account transitions from inactive to active.
-        // This covers two cases:
-        //   1. Brand-new grant (no prior assignment).
-        //   2. Re-grant of a previously expired role (raw assignment exists but was inactive).
-        // An expiry update on a live role must NOT increment to avoid double-counting.
-        if !currently_active {
-            let count: u32 = env
-                .storage()
-                .instance()
-                .get::<DataKey, u32>(&DataKey::RoleMemberCount(role.clone()))
-                .unwrap_or(0);
-            env.storage()
-                .instance()
-                .set(&DataKey::RoleMemberCount(role.clone()), &(count + 1));
         }
 
-        let mut roles: Vec<String> = env
-            .storage()
-            .instance()
-            .get(&DataKey::AddressRoles(account.clone()))
-            .unwrap_or_else(|| Vec::new(env));
-        if !roles.iter().any(|r| r == *role) {
-            roles.push_back(role.clone());
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::AddressRoles(account.clone()), &roles);
-
-        let key = DataKey::RoleExpiry(role.clone(), account.clone());
-        env.storage().instance().set(&key, &expiry_timestamp);
+        // `currently_active` covers both brand-new grants and re-grants of a
+        // previously expired role (raw assignment exists but was inactive);
+        // an expiry update on a role that's already live must not bump
+        // RoleMemberCount again, to avoid double-counting.
+        Self::activate_role_grant(env, role, account, expiry_timestamp, currently_active);
 
         env.events().publish(
             (Symbol::new(env, router_common::EVENT_ROLE_GRANTED),),
