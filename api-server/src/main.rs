@@ -116,6 +116,12 @@ async fn main() -> Result<()> {
     info!("Listen address: {}", args.listen);
     info!("RPC URL: {}", args.rpc_url);
 
+    crate::rate_limit::validate_rate_limit_args(
+        args.rate_limit_max_requests,
+        args.rate_limit_window_secs,
+    )
+    .context("invalid rate-limit configuration")?;
+
     let rate_limiter = RateLimiter::new(RateLimitConfig {
         max_requests: args.rate_limit_max_requests,
         window: std::time::Duration::from_secs(args.rate_limit_window_secs),
