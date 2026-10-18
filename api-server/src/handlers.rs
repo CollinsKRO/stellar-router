@@ -60,13 +60,24 @@ pub async fn simulate(
     State(state): State<AppState>,
     Json(req): Json<SimulateRequest>,
 ) -> Result<Json<SimulateResponse>, (StatusCode, Json<ErrorResponse>)> {
-    if req.target.is_empty() || req.function.is_empty() {
+    if req.target.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::with_field(
                 ErrorCode::ValidationError,
                 "target and function are required",
                 "target",
+            )),
+        ));
+    }
+
+    if req.function.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::with_field(
+                ErrorCode::ValidationError,
+                "target and function are required",
+                "function",
             )),
         ));
     }
