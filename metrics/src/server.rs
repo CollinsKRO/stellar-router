@@ -49,22 +49,29 @@ pub async fn serve(listen: String, registry: Registry, limiter: RateLimiter) -> 
     let replay_config = ReplayProtectionConfig::from_env();
     let nonce_cache = NonceCache::new(replay_config);
 
+    // `/health` and `/ready` are liveness/readiness probes used by Docker's
+    // HEALTHCHECK and orchestrators, which don't send an API key or a
+    // `X-Nonce` header. They're registered *after* `route_layer`, so — unlike
+    // `.layer()` — the auth and replay-protection middleware below only wrap
+    // the routes already present on the router (`/metrics` and the Swagger
+    // UI), not these two. Rate limiting and the request-id middleware still
+    // apply to every route via `.layer()`.
     let app = Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .route("/metrics", get(metrics_handler))
+        .route_layer(middleware::from_fn_with_state(
+            nonce_cache,
+            crate::replay_protection::replay_protection_middleware,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            auth_config,
+            crate::auth::auth_middleware,
+        ))
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
         .layer(middleware::from_fn_with_state(
             limiter,
             rate_limit_middleware,
-        ))
-        .layer(middleware::from_fn_with_state(
-            nonce_cache,
-            crate::replay_protection::replay_protection_middleware,
-        ))
-        .layer(middleware::from_fn_with_state(
-            auth_config,
-            crate::auth::auth_middleware,
         ))
         .layer(middleware::from_fn(request_id_middleware))
         .with_state(state);
@@ -345,6 +352,108 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Builds the same route topology as `serve()` — `/metrics` behind
+    /// `route_layer`'d auth + replay-protection middleware, `/health` and
+    /// `/ready` registered afterward so they're unaffected by either.
+    fn make_app_with_auth_and_replay_protection() -> Router {
+        let registry = Registry::new();
+        let gauge = prometheus::Gauge::new("test_gauge", "a test gauge").unwrap();
+        registry.register(Box::new(gauge.clone())).unwrap();
+        gauge.set(42.0);
+        let state = AppState { registry };
+
+        let auth_config = crate::auth::AuthConfig {
+            enabled: true,
+            api_key: Some("secret-key".to_string()),
+        };
+        let replay_config = ReplayProtectionConfig {
+            enabled: true,
+            cache_size: 10_000,
+            nonce_ttl_secs: 3600,
+        };
+        let nonce_cache = NonceCache::new(replay_config);
+
+        Router::new()
+            .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+            .route("/metrics", get(metrics_handler))
+            .route_layer(middleware::from_fn_with_state(
+                nonce_cache,
+                crate::replay_protection::replay_protection_middleware,
+            ))
+            .route_layer(middleware::from_fn_with_state(
+                auth_config,
+                crate::auth::auth_middleware,
+            ))
+            .route("/health", get(health_handler))
+            .route("/ready", get(ready_handler))
+            .with_state(state)
+    }
+
+    #[tokio::test]
+    async fn test_health_returns_200_without_credentials_when_auth_and_replay_enabled() {
+        let app = make_app_with_auth_and_replay_protection();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_ready_returns_200_without_credentials_when_auth_and_replay_enabled() {
+        // `/ready` reports `router_up` from the registry; the gauge isn't
+        // set here, so it's expected to come back "not ready" (503) rather
+        // than erroring out on missing auth/nonce headers (401/400).
+        let app = make_app_with_auth_and_replay_protection();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_still_requires_api_key_when_auth_enabled() {
+        let app = make_app_with_auth_and_replay_protection();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_succeeds_with_valid_api_key_and_nonce() {
+        let app = make_app_with_auth_and_replay_protection();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .header("x-api-key", "secret-key")
+                    .header("x-nonce", "test-nonce-1")
                     .body(Body::empty())
                     .unwrap(),
             )

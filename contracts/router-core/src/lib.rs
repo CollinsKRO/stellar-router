@@ -3072,6 +3072,23 @@ mod tests {
         assert_eq!(result, Err(Ok(RouterError::RouteInUse)));
     }
 
+    #[test]
+    fn test_remove_route_clears_dependencies_for_reregistered_route() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let dex = String::from_str(&env, "dex");
+
+        client.register_route(&admin, &oracle, &Address::generate(&env), &None);
+        client.register_route(&admin, &dex, &Address::generate(&env), &None);
+        client.set_route_dependency(&admin, &dex, &oracle);
+
+        client.remove_route(&admin, &dex);
+        client.register_route(&admin, &dex, &Address::generate(&env), &None);
+
+        // The re-registered route must not inherit the deleted route's edges.
+        assert_eq!(client.get_route_dependencies(&dex).len(), 0);
+    }
+
     // ── Dependents reverse-index tests ───────────────────────────────────────
 
     /// set_route_dependency must populate the reverse index so that

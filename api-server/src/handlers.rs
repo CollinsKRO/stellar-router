@@ -60,13 +60,24 @@ pub async fn simulate(
     State(state): State<AppState>,
     Json(req): Json<SimulateRequest>,
 ) -> Result<Json<SimulateResponse>, (StatusCode, Json<ErrorResponse>)> {
-    if req.target.is_empty() || req.function.is_empty() {
+    if req.target.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::with_field(
                 ErrorCode::ValidationError,
                 "target and function are required",
                 "target",
+            )),
+        ));
+    }
+
+    if req.function.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::with_field(
+                ErrorCode::ValidationError,
+                "target and function are required",
+                "function",
             )),
         ));
     }
@@ -125,6 +136,7 @@ pub async fn simulate(
     responses(
         (status = 200, description = "Route entry returned", body = RouteEntryResponse),
         (status = 404, description = "Route not found", body = ErrorResponse),
+        (status = 503, description = "Router core contract not configured", body = ErrorResponse),
         (status = 500, description = "RPC error", body = ErrorResponse),
     )
 )]
@@ -137,6 +149,19 @@ pub async fn get_route(
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
     info!(route = %name, "fetching route");
+
+    // Same guard as `list_routes`: fail fast with a clear 503 instead of
+    // sending a pointless RPC request with an empty contract ID and mapping
+    // the resulting failure to a misleading 500.
+    if state.router_core_contract_id.is_empty() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse::new(
+                ErrorCode::InternalError,
+                "ROUTER_CORE_CONTRACT_ID not configured",
+            )),
+        ));
+    }
 
     match state.rpc.get_route(&name).await {
         Ok(Some(entry)) => Ok((StatusCode::OK, Json(entry))),

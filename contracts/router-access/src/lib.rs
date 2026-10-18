@@ -31,7 +31,7 @@ pub enum DataKey {
     RoleMemberCount(String), // role -> u32 (active members)
 
     AddressRoles(Address), // address -> Vec<String>
-    RoleExpiry(String, Address),
+    RoleExpiry(String, Address), // (role, address) -> expiry timestamp (u64::MAX = no expiry)
     RoleParent(String), // child role -> parent role
     AllRoles,           // Vec<String> — all roles ever defined in the system
 
@@ -557,52 +557,13 @@ impl RouterAccess {
         // Remove grant from source (including member counters/lists).
         Self::deactivate_role_grant(&env, &role, &from);
 
-        // Grant to destination with same expiry timestamp.
-
         // Track this role in AllRoles if it's the first time we've seen it.
         Self::track_role_in_all_roles(&env, &role)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::HasRole(role.clone(), to.clone()), &true);
-
-        let mut members_to: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::RoleMembers(role.clone()))
-            .unwrap_or_else(|| Vec::new(&env));
-        if !members_to.iter().any(|a| a == to) {
-            members_to.push_back(to.clone());
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::RoleMembers(role.clone()), &members_to);
-
-        let mut roles_to: Vec<String> = env
-            .storage()
-            .instance()
-            .get(&DataKey::AddressRoles(to.clone()))
-            .unwrap_or_else(|| Vec::new(&env));
-        if !roles_to.iter().any(|r| r == role) {
-            roles_to.push_back(role.clone());
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::AddressRoles(to.clone()), &roles_to);
-
-        let key_to = DataKey::RoleExpiry(role.clone(), to.clone());
-        env.storage().instance().set(&key_to, &expiry);
-
-        // Since from was active and we preserve expiry, destination should become active too.
-        let current: u32 = env
-            .storage()
-            .instance()
-            .get::<DataKey, u32>(&DataKey::RoleMemberCount(role.clone()))
-            .unwrap_or(0u32);
-        let new_count = current.saturating_add(1);
-        env.storage()
-            .instance()
-            .set(&DataKey::RoleMemberCount(role.clone()), &new_count);
+        // Grant to destination with same expiry timestamp. `to` was just
+        // verified above to not currently have the role active, so it is
+        // always transitioning from inactive to active here.
+        Self::activate_role_grant(&env, &role, &to, expiry, false);
 
         env.events().publish(
             (Symbol::new(&env, router_common::EVENT_ROLE_GRANTED),),
@@ -652,6 +613,9 @@ impl RouterAccess {
             .ok_or(AccessError::NotInitialized)
     }
 
+    /// Force-expires `target`'s grant of `role`, identical in effect to letting the
+    /// grant's expiry lapse naturally. Unlike `revoke_role`, only the super-admin
+    /// may call this (not a per-role `RoleAdmin`).
     pub fn expire_role(
         env: Env,
         caller: Address,
@@ -660,6 +624,15 @@ impl RouterAccess {
     ) -> Result<(), AccessError> {
         caller.require_auth();
         Self::require_super_admin(&env, &caller)?;
+
+        // Same guard as `revoke_role`: check the raw storage key so a grant
+        // that never existed is rejected instead of silently emitting a
+        // `role_expired` event for it.
+        let key = DataKey::HasRole(role.clone(), target.clone());
+        if !env.storage().instance().has(&key) {
+            return Err(AccessError::RoleNotFound);
+        }
+
         Self::deactivate_role_grant(&env, &role, &target);
         env.events().publish(
             (Symbol::new(&env, router_common::EVENT_ROLE_EXPIRED),),
@@ -721,6 +694,67 @@ impl RouterAccess {
         env.storage()
             .instance()
             .remove(&DataKey::RoleExpiry(role.clone(), target.clone()));
+    }
+
+    /// Activates `role` for `account`: sets `HasRole`, adds `account` to
+    /// `RoleMembers(role)` and `role` to `AddressRoles(account)` if not
+    /// already present, writes `RoleExpiry(role, account)`, and bumps
+    /// `RoleMemberCount` unless `was_already_active` is `true`. Shared by
+    /// `grant_role_internal` and `transfer_role_membership` so both leave
+    /// identical, consistent bookkeeping behind.
+    ///
+    /// Callers must have already validated their own pre-conditions
+    /// (blacklist checks, cap checks, duplicate-grant checks) before calling
+    /// this — it performs the storage writes unconditionally.
+    fn activate_role_grant(
+        env: &Env,
+        role: &String,
+        account: &Address,
+        expiry_timestamp: u64,
+        was_already_active: bool,
+    ) {
+        env.storage()
+            .instance()
+            .set(&DataKey::HasRole(role.clone(), account.clone()), &true);
+
+        let mut members: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::RoleMembers(role.clone()))
+            .unwrap_or_else(|| Vec::new(env));
+        if !members.iter().any(|a| a == *account) {
+            members.push_back(account.clone());
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::RoleMembers(role.clone()), &members);
+
+        if !was_already_active {
+            let count: u32 = env
+                .storage()
+                .instance()
+                .get::<DataKey, u32>(&DataKey::RoleMemberCount(role.clone()))
+                .unwrap_or(0u32);
+            env.storage()
+                .instance()
+                .set(&DataKey::RoleMemberCount(role.clone()), &count.saturating_add(1));
+        }
+
+        let mut roles: Vec<String> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AddressRoles(account.clone()))
+            .unwrap_or_else(|| Vec::new(env));
+        if !roles.iter().any(|r| r == *role) {
+            roles.push_back(role.clone());
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::AddressRoles(account.clone()), &roles);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RoleExpiry(role.clone(), account.clone()), &expiry_timestamp);
     }
 
     /// Track a role name in the AllRoles list if it hasn't been seen before.
@@ -876,6 +910,14 @@ impl RouterAccess {
         // write made here before this point would persist even though the
         // batch reports the grant as rejected.
         let mut members: Vec<Address> = env
+        // Track this role in AllRoles if it's the first time we've seen it
+        Self::track_role_in_all_roles(env, role)?;
+
+        // Enforce MaxGrantsPerRole before adding a brand-new member. Not
+        // relevant when `account` is already recorded in RoleMembers (a
+        // fresh grant, an expiry update, or a re-grant of a previously
+        // expired assignment all keep the same membership-list entry).
+        let already_a_member: Vec<Address> = env
             .storage()
             .instance()
             .get(&DataKey::RoleMembers(role.clone()))
@@ -883,6 +925,7 @@ impl RouterAccess {
         let is_new_member = !members.iter().any(|a| a == *account);
         if is_new_member {
             // Enforce MaxGrantsPerRole before adding a new member.
+        if !already_a_member.iter().any(|a| a == *account) {
             let (_, max_grants) = Self::role_limits_internal(env);
             let current_count: u32 = env
                 .storage()
@@ -932,12 +975,12 @@ impl RouterAccess {
         if !roles.iter().any(|r| r == *role) {
             roles.push_back(role.clone());
         }
-        env.storage()
-            .instance()
-            .set(&DataKey::AddressRoles(account.clone()), &roles);
 
-        let key = DataKey::RoleExpiry(role.clone(), account.clone());
-        env.storage().instance().set(&key, &expiry_timestamp);
+        // `currently_active` covers both brand-new grants and re-grants of a
+        // previously expired role (raw assignment exists but was inactive);
+        // an expiry update on a role that's already live must not bump
+        // RoleMemberCount again, to avoid double-counting.
+        Self::activate_role_grant(env, role, account, expiry_timestamp, currently_active);
 
         env.events().publish(
             (Symbol::new(env, router_common::EVENT_ROLE_GRANTED),),
@@ -1628,6 +1671,19 @@ mod tests {
         assert_eq!(result, Err(Ok(AccessError::Unauthorized)));
     }
 
+    // ── Issue #1265: expire_role on a grant that never existed ───────────────
+
+    #[test]
+    fn test_expire_nonexistent_role_fails() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+        // Never granted — must be rejected, not accepted with a misleading
+        // `role_expired` event.
+        let result = client.try_expire_role(&admin, &role, &user);
+        assert_eq!(result, Err(Ok(AccessError::RoleNotFound)));
+    }
+
     #[test]
     fn test_revoke_role_emits_event() {
         let (env, admin, client) = setup();
@@ -1688,6 +1744,54 @@ mod tests {
         let role = String::from_str(&env, "operator");
 
         assert_eq!(client.get_role_admin(&role), None);
+    }
+
+    #[test]
+    fn test_get_role_limits_defaults() {
+        let (_env, _admin, client) = setup();
+        assert_eq!(
+            client.get_role_limits(),
+            (DEFAULT_MAX_ROLES, DEFAULT_MAX_GRANTS_PER_ROLE)
+        );
+    }
+
+    #[test]
+    fn test_set_role_limits_updates_and_persists() {
+        let (_env, admin, client) = setup();
+        client.set_role_limits(&admin, &Some(5), &Some(2));
+        assert_eq!(client.get_role_limits(), (5, 2));
+    }
+
+    #[test]
+    fn test_set_role_limits_none_resets_to_defaults() {
+        let (_env, admin, client) = setup();
+        client.set_role_limits(&admin, &Some(5), &Some(2));
+        client.set_role_limits(&admin, &None, &None);
+        assert_eq!(
+            client.get_role_limits(),
+            (DEFAULT_MAX_ROLES, DEFAULT_MAX_GRANTS_PER_ROLE)
+        );
+    }
+
+    #[test]
+    fn test_set_role_limits_some_zero_is_stored() {
+        let (_env, admin, client) = setup();
+        client.set_role_limits(&admin, &Some(0), &Some(0));
+        assert_eq!(client.get_role_limits(), (0, 0));
+    }
+
+    #[test]
+    fn test_set_role_limits_unauthorized_fails() {
+        let (env, _admin, client) = setup();
+        let attacker = Address::generate(&env);
+        assert_eq!(
+            client.try_set_role_limits(&attacker, &Some(5), &Some(2)),
+            Err(Ok(AccessError::Unauthorized))
+        );
+        assert_eq!(
+            client.get_role_limits(),
+            (DEFAULT_MAX_ROLES, DEFAULT_MAX_GRANTS_PER_ROLE)
+        );
     }
 
     #[test]

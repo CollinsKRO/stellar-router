@@ -39,6 +39,24 @@ impl Default for RateLimitConfig {
     }
 }
 
+/// Validates the CLI/env-supplied rate-limit parameters before a
+/// [`RateLimiter`] is constructed from them.
+///
+/// `tokio::time::interval` panics when given a zero-duration period, so a
+/// `window_secs` of `0` must be rejected here instead of crashing the
+/// background sweeper task (`RateLimiter::spawn_sweeper`) at startup. A
+/// `max_requests` of `0` is rejected too, since it would silently reject
+/// every single request rather than disabling the limiter.
+pub fn validate_rate_limit_args(max_requests: u32, window_secs: u64) -> anyhow::Result<()> {
+    if window_secs == 0 {
+        anyhow::bail!("rate_limit_window_secs must be greater than 0");
+    }
+    if max_requests == 0 {
+        anyhow::bail!("rate_limit_max_requests must be greater than 0");
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct BucketEntry {
     count: u32,
@@ -200,5 +218,22 @@ mod tests {
         assert!(rl.check_and_remaining("192.168.1.1").0);
         assert!(rl.check_and_remaining("192.168.1.2").0);
         assert!(!rl.check_and_remaining("192.168.1.1").0);
+    }
+
+    #[test]
+    fn valid_rate_limit_args_accepted() {
+        assert!(validate_rate_limit_args(100, 60).is_ok());
+    }
+
+    #[test]
+    fn zero_window_secs_rejected() {
+        let err = validate_rate_limit_args(100, 0).unwrap_err();
+        assert!(err.to_string().contains("rate_limit_window_secs"));
+    }
+
+    #[test]
+    fn zero_max_requests_rejected() {
+        let err = validate_rate_limit_args(0, 60).unwrap_err();
+        assert!(err.to_string().contains("rate_limit_max_requests"));
     }
 }

@@ -262,6 +262,11 @@ async fn test_simulate_missing_target_returns_400() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error"]["field"].as_str().unwrap(), "target");
 }
 
 #[tokio::test]
@@ -280,6 +285,11 @@ async fn test_simulate_missing_function_returns_400() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error"]["field"].as_str().unwrap(), "function");
 }
 
 #[tokio::test]
@@ -372,7 +382,7 @@ async fn test_simulate_malformed_json_body_returns_400_or_422() {
 }
 
 #[tokio::test]
-async fn test_get_route_returns_500_when_core_not_configured() {
+async fn test_get_route_returns_503_when_core_not_configured() {
     let app = test_app();
     let resp = app
         .oneshot(
@@ -383,14 +393,14 @@ async fn test_get_route_returns_500_when_core_not_configured() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap();
     assert!(json["error"].is_object());
     assert!(json["error"]["code"].is_string());
-    assert!(json["error"]["message"].is_string());
+    assert_eq!(json["error"]["message"], "ROUTER_CORE_CONTRACT_ID not configured");
 }
 
 #[tokio::test]
