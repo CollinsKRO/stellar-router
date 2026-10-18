@@ -976,8 +976,8 @@ impl RouterMiddleware {
                 .instance()
                 .get::<DataKey, RouteConfig>(&DataKey::RouteConfig(route))
             {
-                let recovers = config.recovery_window_seconds > 0
-                    && env.ledger().timestamp() >= cb.opened_at + config.recovery_window_seconds;
+                let recovers =
+                    circuit_breaker::recovery_elapsed(&cb, &config, env.ledger().timestamp());
                 if recovers {
                     cb.is_open = false;
                     cb.is_half_open = true;
@@ -1818,6 +1818,30 @@ mod tests {
         client.reset_circuit_breaker(&admin, &route);
         let state = client.get_circuit_breaker_state(&route).unwrap();
         assert!(!state.is_open);
+    }
+
+    // ── Issue #1438: recovery_window_seconds = u64::MAX must not overflow ────
+
+    /// A route configured with `failure_threshold = 1` and
+    /// `recovery_window_seconds = u64::MAX` (meant to signal "only recover
+    /// manually") must open the circuit on the first failure and keep
+    /// returning `CircuitOpen` / `is_open: true` from `pre_call` and
+    /// `get_circuit_breaker_state` — not trap on an unchecked
+    /// `opened_at + recovery_window_seconds` addition.
+    #[test]
+    fn test_circuit_open_with_max_recovery_window_does_not_overflow() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &0, &0, &true, &1, &u64::MAX, &0, &0);
+        let caller = Address::generate(&env);
+
+        client.post_call(&caller, &route, &false);
+
+        let result = client.try_pre_call(&caller, &route);
+        assert_eq!(result, Err(Ok(MiddlewareError::CircuitOpen)));
+
+        let state = client.get_circuit_breaker_state(&route).unwrap();
+        assert!(state.is_open);
     }
 
     // ── Issue #1318: circuit_breaker_state must recompute stale open state ────

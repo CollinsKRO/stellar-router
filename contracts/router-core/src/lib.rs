@@ -673,6 +673,11 @@ impl RouterCore {
         env.storage()
             .instance()
             .remove(&DataKey::Metadata(name.clone()));
+        // Issue #1436: without this, a re-registered route with the same
+        // name would silently inherit the removed route's score.
+        env.storage()
+            .instance()
+            .remove(&DataKey::Score(name.clone()));
 
         // Clean up the reverse index: for every route that `name` declared as a
         // dependency, remove `name` from that route's Dependents list.
@@ -765,17 +770,30 @@ impl RouterCore {
         let mut result = router_common::BatchResult::new(&env);
 
         if fail_fast {
-            // Issue #1280: use Map<String, bool> as an O(1) set instead of
-            // Vec::contains (which is O(n)) for within-batch duplicate detection.
-            let mut seen: soroban_sdk::Map<String, bool> = soroban_sdk::Map::new(&env);
+            // Issue #1280: use a Map<String, bool> as an O(1) set instead of
+            // Vec::contains (which is O(n)) for within-batch duplicate-name
+            // lookups, avoiding an O(n²) loop.
+            let mut seen: Map<String, bool> = Map::new(&env);
+
+            // Issue #1435: pre-validate every item — including the zero-address
+            // and MaxRoutes checks that register_route_internal also performs —
+            // so a failure here always returns Ok(result) with the failing
+            // index recorded, instead of escaping through `?` below as a bare
+            // Err and aborting the whole call.
+            let current_count: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::RouteCount)
+                .unwrap_or(0);
+            let max_routes: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::MaxRoutes)
+                .unwrap_or(DEFAULT_MAX_ROUTES);
+
             for (index, route) in routes.iter().enumerate() {
                 let idx = index as u32;
                 // Detect within-batch duplicates in O(1) via map lookup.
-            // Use a Map for O(1) duplicate-name lookups instead of Vec::contains
-            // which would make this loop O(n²) (issue #1280).
-            let mut seen = Map::new(&env);
-            for (index, route) in routes.iter().enumerate() {
-                let idx = index as u32;
                 if seen.contains_key(route.name.clone()) {
                     result.record_failure(idx, router_common::BatchItemError::AlreadyExists);
                     return Ok(result);
@@ -784,12 +802,22 @@ impl RouterCore {
                 // route/alias already exists in storage — the previous redundant
                 // `has(&DataKey::Route(...))` block after this call has been
                 // removed (issue #1279: it was unreachable).
-                // validate_route_name already checks if the route or an alias
-                // with this name already exists in storage, returning
-                // RouteAlreadyExists — so no separate storage check is needed
-                // here (issue #1279 removed an unreachable duplicate check).
                 if let Err(err) = Self::validate_route_name(&env, &route.name) {
                     result.record_failure(idx, Self::router_error_to_batch(&env, err));
+                    return Ok(result);
+                }
+                if Self::is_zero_address(&env, &route.address) {
+                    result.record_failure(
+                        idx,
+                        Self::router_error_to_batch(&env, RouterError::InvalidAddress),
+                    );
+                    return Ok(result);
+                }
+                if current_count + (seen.len()) >= max_routes {
+                    result.record_failure(
+                        idx,
+                        Self::router_error_to_batch(&env, RouterError::TooManyRoutes),
+                    );
                     return Ok(result);
                 }
                 seen.set(route.name.clone(), true);
@@ -2674,6 +2702,11 @@ impl RouterCore {
         env.storage()
             .instance()
             .remove(&DataKey::Metadata(name.clone()));
+        // Issue #1436: without this, a re-registered route with the same
+        // name would silently inherit the removed route's score.
+        env.storage()
+            .instance()
+            .remove(&DataKey::Score(name.clone()));
 
         // Clean up the reverse index: for every route that `name` declared as a
         // dependency, remove `name` from that route's Dependents list.
@@ -2916,6 +2949,76 @@ mod tests {
         client.remove_route(&admin, &name);
         let result = client.try_resolve(&name);
         assert_eq!(result, Err(Ok(RouterError::RouteNotFound)));
+    }
+
+    // ── Issue #1436: remove_route must also clear DataKey::Score ──────────────
+
+    #[test]
+    fn test_remove_route_clears_score() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr, &None);
+        client.set_route_score(
+            &admin,
+            &name,
+            &RouteScore {
+                liquidity_score: 80,
+                fee_bps: 10,
+                reliability_score: 90,
+            },
+        );
+        assert!(client.get_route_score(&name).is_some());
+
+        client.remove_route(&admin, &name);
+
+        assert_eq!(client.get_route_score(&name), None);
+    }
+
+    #[test]
+    fn test_remove_route_then_reregister_does_not_inherit_old_score() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr, &None);
+        client.set_route_score(
+            &admin,
+            &name,
+            &RouteScore {
+                liquidity_score: 80,
+                fee_bps: 10,
+                reliability_score: 90,
+            },
+        );
+        client.remove_route(&admin, &name);
+
+        // Re-register the same name, possibly pointing at a different address.
+        let new_addr = Address::generate(&env);
+        client.register_route(&admin, &name, &new_addr, &None);
+
+        assert_eq!(client.get_route_score(&name), None);
+    }
+
+    #[test]
+    fn test_remove_routes_batch_clears_score() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr, &None);
+        client.set_route_score(
+            &admin,
+            &name,
+            &RouteScore {
+                liquidity_score: 80,
+                fee_bps: 10,
+                reliability_score: 90,
+            },
+        );
+        assert!(client.get_route_score(&name).is_some());
+
+        client.remove_routes_batch(&admin, &vec![&env, name.clone()], &false);
+
+        assert_eq!(client.get_route_score(&name), None);
     }
 
     #[test]
@@ -5367,6 +5470,88 @@ mod tests {
         );
         assert_eq!(
             client.try_resolve(&new_route),
+            Err(Ok(RouterError::RouteNotFound))
+        );
+    }
+
+    // ── Issue #1435: register_routes_batch fail_fast must pre-validate the
+    //    zero-address and TooManyRoutes checks instead of letting them escape
+    //    through `?` as a bare Err ───────────────────────────────────────────
+
+    #[test]
+    fn test_register_routes_batch_fail_fast_rejects_zero_address_without_err() {
+        let (env, admin, client) = setup();
+        let zero_addr = Address::from_string(&String::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        ));
+
+        let routes = vec![
+            &env,
+            RouteRegisterInput {
+                name: String::from_str(&env, "oracle"),
+                address: Address::generate(&env),
+            },
+            RouteRegisterInput {
+                name: String::from_str(&env, "vault"),
+                address: zero_addr,
+            },
+        ];
+
+        let result = client.register_routes_batch(&admin, &routes, &true);
+        assert_eq!(result.successes.len(), 0);
+        assert_eq!(result.failures.len(), 1);
+        assert_eq!(result.failures.get(0).unwrap().index, 1);
+        assert_eq!(
+            result.failures.get(0).unwrap().error,
+            router_common::BatchItemError::Custom(String::from_str(&env, "InvalidAddress"))
+        );
+        // Fail-fast must commit nothing, including the valid item before it.
+        assert_eq!(client.route_count(), 0);
+        assert_eq!(
+            client.try_resolve(&String::from_str(&env, "oracle")),
+            Err(Ok(RouterError::RouteNotFound))
+        );
+    }
+
+    #[test]
+    fn test_register_routes_batch_fail_fast_rejects_over_max_routes_without_err() {
+        let (env, admin, client) = setup();
+        client.set_max_routes(&admin, &2);
+        client.register_route(
+            &admin,
+            &String::from_str(&env, "existing"),
+            &Address::generate(&env),
+            &None,
+        );
+
+        // Cap is 2, one route already registered — the batch below would
+        // bring the total to 3, so the second item must fail with
+        // TooManyRoutes instead of the whole call aborting with Err.
+        let routes = vec![
+            &env,
+            RouteRegisterInput {
+                name: String::from_str(&env, "oracle"),
+                address: Address::generate(&env),
+            },
+            RouteRegisterInput {
+                name: String::from_str(&env, "vault"),
+                address: Address::generate(&env),
+            },
+        ];
+
+        let result = client.register_routes_batch(&admin, &routes, &true);
+        assert_eq!(result.successes.len(), 0);
+        assert_eq!(result.failures.len(), 1);
+        assert_eq!(result.failures.get(0).unwrap().index, 1);
+        assert_eq!(
+            result.failures.get(0).unwrap().error,
+            router_common::BatchItemError::Custom(String::from_str(&env, "TooManyRoutes"))
+        );
+        // Fail-fast must commit nothing from this batch.
+        assert_eq!(client.route_count(), 1);
+        assert_eq!(
+            client.try_resolve(&String::from_str(&env, "oracle")),
             Err(Ok(RouterError::RouteNotFound))
         );
     }

@@ -9,6 +9,16 @@ use soroban_sdk::{Env, Map, String, Symbol};
 
 use crate::{CircuitBreakerState, DataKey, RouteCallState, RouteConfig};
 
+/// Returns whether the circuit breaker's recovery window has elapsed as of
+/// `now`. Uses `saturating_add` so a very large `recovery_window_seconds`
+/// (e.g. `u64::MAX`, meant to signal "only recover manually") can never
+/// overflow `opened_at + recovery_window_seconds` and trap — it simply never
+/// recovers. (Issue #1438)
+pub fn recovery_elapsed(cb: &CircuitBreakerState, config: &RouteConfig, now: u64) -> bool {
+    config.recovery_window_seconds > 0
+        && now >= cb.opened_at.saturating_add(config.recovery_window_seconds)
+}
+
 /// Check circuit breaker state in `pre_call` and transition to half-open if
 /// the recovery window has elapsed. Returns `true` if the call should be
 /// blocked (circuit is open and recovery window has not elapsed).
@@ -19,9 +29,11 @@ pub fn check_and_transition(
     route_call_state: &mut RouteCallState,
 ) -> bool {
     if route_call_state.circuit_breaker.is_open {
-        let recovers = config.recovery_window_seconds > 0
-            && env.ledger().timestamp()
-                >= route_call_state.circuit_breaker.opened_at + config.recovery_window_seconds;
+        let recovers = recovery_elapsed(
+            &route_call_state.circuit_breaker,
+            config,
+            env.ledger().timestamp(),
+        );
 
         if recovers {
             route_call_state.circuit_breaker.is_open = false;
@@ -252,6 +264,22 @@ mod tests {
             assert_eq!(after.circuit_breaker.failure_count, 0);
             assert_eq!(after.circuit_breaker.opened_at, 0);
         });
+    }
+
+    #[test]
+    fn recovery_elapsed_does_not_overflow_with_max_recovery_window() {
+        let cb = CircuitBreakerState {
+            failure_count: 1,
+            opened_at: 1_000,
+            is_open: true,
+            is_half_open: false,
+        };
+        let config = cfg(1, u64::MAX);
+
+        // Must not panic/trap on overflow, and must never report "elapsed"
+        // for a recovery window meant to mean "only recover manually".
+        assert!(!recovery_elapsed(&cb, &config, 1_000));
+        assert!(!recovery_elapsed(&cb, &config, u64::MAX));
     }
 
     #[test]

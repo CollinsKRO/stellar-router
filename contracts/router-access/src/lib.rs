@@ -869,19 +869,19 @@ impl RouterAccess {
             }
         }
 
-        // Track this role in AllRoles if it's the first time we've seen it
-        Self::track_role_in_all_roles(env, role)?;
-
-        env.storage()
-            .instance()
-            .set(&DataKey::HasRole(role.clone(), account.clone()), &true);
-
+        // Issue #1433: every check that can fail must run *before* any
+        // storage write. grant_role_batch records a per-account error and
+        // still returns Ok(result) — it does not roll back writes already
+        // made by this call the way a bare Err from grant_role does — so a
+        // write made here before this point would persist even though the
+        // batch reports the grant as rejected.
         let mut members: Vec<Address> = env
             .storage()
             .instance()
             .get(&DataKey::RoleMembers(role.clone()))
             .unwrap_or_else(|| Vec::new(env));
-        if !members.iter().any(|a| a == *account) {
+        let is_new_member = !members.iter().any(|a| a == *account);
+        if is_new_member {
             // Enforce MaxGrantsPerRole before adding a new member.
             let (_, max_grants) = Self::role_limits_internal(env);
             let current_count: u32 = env
@@ -892,6 +892,16 @@ impl RouterAccess {
             if current_count >= max_grants {
                 return Err(AccessError::MaxGrantsPerRoleExceeded);
             }
+        }
+
+        // Track this role in AllRoles if it's the first time we've seen it
+        Self::track_role_in_all_roles(env, role)?;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::HasRole(role.clone(), account.clone()), &true);
+
+        if is_new_member {
             members.push_back(account.clone());
         }
         env.storage()
@@ -1748,6 +1758,37 @@ mod tests {
             result.failures.get(0).unwrap().error,
             router_common::BatchItemError::AlreadyExists
         );
+    }
+
+    // ── Issue #1433: grant_role_internal must not write before checking
+    //    MaxGrantsPerRoleExceeded ─────────────────────────────────────────────
+
+    #[test]
+    fn test_grant_role_batch_rejected_account_does_not_hold_role_at_cap() {
+        let (env, admin, client) = setup();
+        client.set_role_limits(&admin, &None, &Some(1)); // only 1 member per role
+        let role = String::from_str(&env, "operator");
+        let u1 = Address::generate(&env);
+        let u2 = Address::generate(&env);
+        let accounts = vec![&env, u1.clone(), u2.clone()];
+
+        let result = client.grant_role_batch(&admin, &accounts, &role, &None, &false);
+
+        assert_eq!(result.successes.len(), 1);
+        assert_eq!(result.successes.get(0).unwrap().index, 0);
+        assert_eq!(result.failures.len(), 1);
+        assert_eq!(result.failures.get(0).unwrap().index, 1);
+        assert_eq!(
+            result.failures.get(0).unwrap().error,
+            router_common::BatchItemError::Custom(String::from_str(&env, "MaxGrantsPerRoleExceeded"))
+        );
+
+        // The rejected account must not actually hold the role, and the
+        // member count/list must reflect only the successful grant.
+        assert!(client.has_role(&u1, &role));
+        assert!(!client.has_role(&u2, &role));
+        assert_eq!(client.get_role_member_count(&role), 1);
+        assert_eq!(client.get_role_members(&role), vec![&env, u1.clone()]);
     }
 
     #[test]
