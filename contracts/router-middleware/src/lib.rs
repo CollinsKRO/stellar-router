@@ -20,6 +20,8 @@
 //! - `call_log_cleared` — Call log cleared for route
 //! - `rate_limit_throttled` / `rate_limit_exceeded` — Limit exceeded under the
 //!   `Throttle` / `LogOnly` strategy
+//! - `circuit_reset` — Circuit breaker manually reset for a route via `reset_circuit_breaker`
+//! - `rate_limit_reset` — A caller's rate limit counter manually reset via `reset_rate_limit`
 //! - `admin_transferred` — Admin transferred to new address
 //!
 //! ## Event ownership
@@ -826,7 +828,8 @@ impl RouterMiddleware {
             // uses, so the view is always consistent with enforcement.
             let effective_window =
                 rate_limit::resolve_effective_window(&env, &route, &caller, config.window_seconds);
-            let window_elapsed = now >= state.window_start + effective_window;
+            let window_elapsed =
+                rate_limit::window_elapsed(now, state.window_start, effective_window);
 
             if window_elapsed {
                 Some(RateLimitState {
@@ -887,7 +890,8 @@ impl RouterMiddleware {
                 // own window, not the route's base window. (Issue #1317)
                 let effective_window =
                     rate_limit::resolve_effective_window(&env, &route, &caller, cfg.window_seconds);
-                let window_elapsed = now >= state.window_start + effective_window;
+                let window_elapsed =
+                    rate_limit::window_elapsed(now, state.window_start, effective_window);
                 if window_elapsed {
                     (0, now)
                 } else {
@@ -1214,7 +1218,7 @@ impl RouterMiddleware {
                     });
 
             let now = env.ledger().timestamp();
-            let window_elapsed = now >= state.window_start + config.window_secs;
+            let window_elapsed = rate_limit::window_elapsed(now, state.window_start, config.window_secs);
             let calls = if window_elapsed {
                 0
             } else {
@@ -1615,6 +1619,26 @@ mod tests {
         assert_eq!(client.get_total_calls(), 1);
     }
 
+    /// Issue #1440: a route configured with an arbitrarily large
+    /// `window_seconds` (e.g. `u64::MAX`, meant as "effectively forever")
+    /// must not make `pre_call` abort. Previously `window_start +
+    /// effective_window` overflowed `u64` under `overflow-checks = true`,
+    /// panicking on every `pre_call` for such a route instead of enforcing
+    /// the limit normally.
+    #[test]
+    fn test_huge_window_does_not_abort_pre_call() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &1, &u64::MAX, &true, &0, &0, &0, &0);
+
+        let caller = Address::generate(&env);
+        assert!(client.try_pre_call(&caller, &route).is_ok());
+        assert_eq!(
+            client.try_pre_call(&caller, &route),
+            Err(Ok(MiddlewareError::RateLimitExceeded))
+        );
+    }
+
     #[test]
     fn test_admin_getter() {
         let (_env, admin, client) = setup();
@@ -1677,6 +1701,68 @@ mod tests {
         let route = String::from_str(&env, "oracle/get_price");
         let attacker = Address::generate(&env);
         let result = client.try_reset_circuit_breaker(&attacker, &route);
+        assert_eq!(result, Err(Ok(MiddlewareError::Unauthorized)));
+    }
+
+    /// Issue #1439: reset_circuit_breaker must emit an event with the route,
+    /// matching every other admin state change (and the sibling
+    /// reset_guard/reset_route_call_log resets).
+    #[test]
+    fn test_reset_circuit_breaker_emits_event() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &0, &0, &true, &1, &0, &0, &0);
+
+        let caller = Address::generate(&env);
+        client.pre_call(&caller, &route);
+        client.post_call(&caller, &route, &false);
+
+        client.reset_circuit_breaker(&admin, &route);
+
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+        let topic: Symbol = last_event.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, Symbol::new(&env, router_common::EVENT_CIRCUIT_RESET));
+        let emitted_route: String = last_event.2.into_val(&env);
+        assert_eq!(emitted_route, route);
+    }
+
+    /// Issue #1439: reset_rate_limit must emit an event with the route and
+    /// the target caller.
+    #[test]
+    fn test_reset_rate_limit_emits_event() {
+        let (env, admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        client.configure_route(&admin, &route, &1, &60, &true, &0, &0, &0, &0);
+
+        let caller = Address::generate(&env);
+        client.pre_call(&caller, &route);
+        assert_eq!(
+            client.try_pre_call(&caller, &route),
+            Err(Ok(MiddlewareError::RateLimitExceeded))
+        );
+
+        client.reset_rate_limit(&admin, &route, &caller);
+
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+        let topic: Symbol = last_event.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, Symbol::new(&env, router_common::EVENT_RATE_LIMIT_RESET));
+        let (emitted_route, emitted_caller): (String, Address) = last_event.2.into_val(&env);
+        assert_eq!(emitted_route, route);
+        assert_eq!(emitted_caller, caller);
+
+        // The reset actually cleared the counter: the caller can call again.
+        assert!(client.try_pre_call(&caller, &route).is_ok());
+    }
+
+    #[test]
+    fn test_unauthorized_reset_rate_limit_fails() {
+        let (env, _admin, client) = setup();
+        let route = String::from_str(&env, "oracle/get_price");
+        let attacker = Address::generate(&env);
+        let caller = Address::generate(&env);
+        let result = client.try_reset_rate_limit(&attacker, &route, &caller);
         assert_eq!(result, Err(Ok(MiddlewareError::Unauthorized)));
     }
 
