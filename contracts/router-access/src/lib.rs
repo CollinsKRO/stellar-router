@@ -18,6 +18,11 @@ const DEFAULT_MAX_ROLES: u32 = 100;
 /// Prevents unbounded `RoleMembers` growth. Configurable via `set_role_limits`.
 const DEFAULT_MAX_GRANTS_PER_ROLE: u32 = 1_000;
 
+/// Extend instance storage TTL when it falls below ~30 days (in ledgers).
+const INSTANCE_TTL_THRESHOLD: u32 = 17280 * 30;
+/// Extend instance storage TTL to ~60 days (in ledgers).
+const INSTANCE_TTL_EXTEND_TO: u32 = 17280 * 60;
+
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -70,6 +75,7 @@ pub struct RouterAccess;
 impl RouterAccess {
     /// Initialize with a super-admin.
     pub fn initialize(env: Env, super_admin: Address) -> Result<(), AccessError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         if env.storage().instance().has(&DataKey::SuperAdmin) {
             return Err(AccessError::AlreadyInitialized);
         }
@@ -98,6 +104,7 @@ impl RouterAccess {
         max_roles: Option<u32>,
         max_grants_per_role: Option<u32>,
     ) -> Result<(), AccessError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         caller.require_auth();
         Self::require_super_admin(&env, &caller)?;
         let effective_max_roles = max_roles.unwrap_or(DEFAULT_MAX_ROLES);
@@ -118,6 +125,7 @@ impl RouterAccess {
     /// Falls back to the compile-time defaults when no explicit limits have been
     /// configured via [`set_role_limits`].
     pub fn get_role_limits(env: Env) -> (u32, u32) {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         Self::role_limits_internal(&env)
     }
 
@@ -129,6 +137,7 @@ impl RouterAccess {
         role: String,
         expires_in: Option<u64>,
     ) -> Result<(), AccessError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         admin.require_auth();
         Self::require_role_manager(&env, &admin, &role)?;
         Self::grant_role_internal(&env, &account, &role, expires_in)
@@ -198,6 +207,7 @@ impl RouterAccess {
         expires_in: Option<u64>,
         fail_fast: bool,
     ) -> Result<router_common::BatchResult, AccessError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         admin.require_auth();
         Self::require_role_manager(&env, &admin, &role)?;
         let mut result = router_common::BatchResult::new(&env);
@@ -223,6 +233,7 @@ impl RouterAccess {
         role: String,
         target: Address,
     ) -> Result<(), AccessError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         caller.require_auth();
         Self::require_role_manager(&env, &caller, &role)?;
 
@@ -245,6 +256,7 @@ impl RouterAccess {
 
     /// Check if an address has a role (and it has not expired).
     pub fn has_role(env: Env, account: Address, role: String) -> bool {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         Self::has_role_internal(&env, &account, &role)
     }
 
@@ -256,6 +268,7 @@ impl RouterAccess {
     /// when `current_timestamp == expires_at` and expired only once
     /// `current_timestamp > expires_at`.
     pub fn is_role_expired(env: Env, role: String, target: Address) -> bool {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         // View helper: counter is maintained for active members, but expiry still
         // uses RoleExpiry storage.
 
@@ -281,6 +294,7 @@ impl RouterAccess {
     /// # Returns
     /// `Some(timestamp)` if an expiry exists, `None` otherwise.
     pub fn get_role_member_count(env: Env, role: String) -> u32 {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         env.storage()
             .instance()
             .get::<DataKey, u32>(&DataKey::RoleMemberCount(role))
@@ -288,6 +302,7 @@ impl RouterAccess {
     }
 
     pub fn get_role_expiry(env: Env, role: String, target: Address) -> Option<u64> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         env.storage()
             .instance()
             .get::<DataKey, u64>(&DataKey::RoleExpiry(role, target))
@@ -300,6 +315,7 @@ impl RouterAccess {
         role: String,
         admin: Address,
     ) -> Result<(), AccessError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         caller.require_auth();
         Self::require_super_admin(&env, &caller)?;
         if Self::is_blacklisted_internal(&env, &admin) {
@@ -319,6 +335,7 @@ impl RouterAccess {
 
     /// Returns the role admin for the given role, or None if none is set.
     pub fn get_role_admin(env: Env, role: String) -> Option<Address> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         env.storage()
             .instance()
             .get::<DataKey, Address>(&DataKey::RoleAdmin(role))
@@ -331,6 +348,7 @@ impl RouterAccess {
         role: String,
         parent_role: String,
     ) -> Result<(), AccessError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         caller.require_auth();
         Self::require_super_admin(&env, &caller)?;
         Self::ensure_no_role_parent_cycle(&env, &role, &parent_role)?;
@@ -350,6 +368,7 @@ impl RouterAccess {
 
     /// Returns the parent role for the given role, or None if none is set.
     pub fn get_role_parent(env: Env, role: String) -> Option<String> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         env.storage()
             .instance()
             .get::<DataKey, String>(&DataKey::RoleParent(role))
@@ -369,6 +388,7 @@ impl RouterAccess {
     /// # Returns
     /// A [`Vec<String>`] of all role names in the system.
     pub fn list_all_roles(env: Env) -> Vec<String> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         env.storage()
             .instance()
             .get(&DataKey::AllRoles)
@@ -377,6 +397,7 @@ impl RouterAccess {
 
     /// Blacklist an address.
     pub fn blacklist(env: Env, caller: Address, target: Address) -> Result<(), AccessError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         caller.require_auth();
         // require_super_admin already verified that DataKey::SuperAdmin exists
         // and equals `caller`, so at this point caller == super_admin is
@@ -411,6 +432,7 @@ impl RouterAccess {
 
     /// Remove from blacklist.
     pub fn unblacklist(env: Env, caller: Address, target: Address) -> Result<(), AccessError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         caller.require_auth();
         Self::require_super_admin(&env, &caller)?;
 
@@ -477,6 +499,7 @@ impl RouterAccess {
     }
 
     pub fn is_blacklisted(env: Env, target: Address) -> bool {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         Self::is_blacklisted_internal(&env, &target)
     }
 
@@ -488,6 +511,7 @@ impl RouterAccess {
     }
 
     pub fn get_role_members(env: Env, role: String) -> Vec<Address> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         let all_members: Vec<Address> = env
             .storage()
             .instance()
@@ -505,6 +529,7 @@ impl RouterAccess {
     }
 
     pub fn get_roles_for_address(env: Env, addr: Address) -> Vec<String> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         env.storage()
             .instance()
             .get(&DataKey::AddressRoles(addr))
@@ -524,6 +549,7 @@ impl RouterAccess {
         from: Address,
         to: Address,
     ) -> Result<(), AccessError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         caller.require_auth();
         Self::require_role_manager(&env, &caller, &role)?;
 
@@ -591,6 +617,7 @@ impl RouterAccess {
         current: Address,
         new_admin: Address,
     ) -> Result<(), AccessError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         current.require_auth();
         Self::require_super_admin(&env, &current)?;
         if Self::is_blacklisted_internal(&env, &new_admin) {
@@ -607,6 +634,7 @@ impl RouterAccess {
     }
 
     pub fn super_admin(env: Env) -> Result<Address, AccessError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         env.storage()
             .instance()
             .get(&DataKey::SuperAdmin)
@@ -622,6 +650,7 @@ impl RouterAccess {
         role: String,
         target: Address,
     ) -> Result<(), AccessError> {
+        router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         caller.require_auth();
         Self::require_super_admin(&env, &caller)?;
 
@@ -1866,6 +1895,40 @@ mod tests {
 
     // ── Issue #1433: grant_role_internal must not write before checking
     //    MaxGrantsPerRoleExceeded ─────────────────────────────────────────────
+
+    // ── Issue #1257: MaxGrantsPerRoleExceeded via try_grant_role ────────────
+
+    #[test]
+    fn test_grant_role_fails_when_max_grants_per_role_exceeded() {
+        let (env, admin, client) = setup();
+        client.set_role_limits(&admin, &None, &Some(1)); // only 1 grantee allowed per role
+        let role = String::from_str(&env, "operator");
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+
+        client.grant_role(&admin, &user1, &role, &None); // consumes the only slot
+
+        let result = client.try_grant_role(&admin, &user2, &role, &None);
+        assert_eq!(result, Err(Ok(AccessError::MaxGrantsPerRoleExceeded)));
+        assert!(!client.has_role(&user2, &role));
+        assert_eq!(client.get_role_member_count(&role), 1);
+    }
+
+    #[test]
+    fn test_grant_role_succeeds_again_after_slot_freed_at_max_grants() {
+        let (env, admin, client) = setup();
+        client.set_role_limits(&admin, &None, &Some(1));
+        let role = String::from_str(&env, "operator");
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+
+        client.grant_role(&admin, &user1, &role, &None);
+        client.revoke_role(&admin, &role, &user1);
+
+        assert_eq!(client.try_grant_role(&admin, &user2, &role, &None), Ok(Ok(())));
+        assert!(client.has_role(&user2, &role));
+        assert_eq!(client.get_role_member_count(&role), 1);
+    }
 
     #[test]
     fn test_grant_role_batch_rejected_account_does_not_hold_role_at_cap() {
