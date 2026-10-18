@@ -1681,6 +1681,54 @@ mod tests {
     }
 
     #[test]
+    fn test_get_role_limits_defaults() {
+        let (_env, _admin, client) = setup();
+        assert_eq!(
+            client.get_role_limits(),
+            (DEFAULT_MAX_ROLES, DEFAULT_MAX_GRANTS_PER_ROLE)
+        );
+    }
+
+    #[test]
+    fn test_set_role_limits_updates_and_persists() {
+        let (_env, admin, client) = setup();
+        client.set_role_limits(&admin, &Some(5), &Some(2));
+        assert_eq!(client.get_role_limits(), (5, 2));
+    }
+
+    #[test]
+    fn test_set_role_limits_none_resets_to_defaults() {
+        let (_env, admin, client) = setup();
+        client.set_role_limits(&admin, &Some(5), &Some(2));
+        client.set_role_limits(&admin, &None, &None);
+        assert_eq!(
+            client.get_role_limits(),
+            (DEFAULT_MAX_ROLES, DEFAULT_MAX_GRANTS_PER_ROLE)
+        );
+    }
+
+    #[test]
+    fn test_set_role_limits_some_zero_is_stored() {
+        let (_env, admin, client) = setup();
+        client.set_role_limits(&admin, &Some(0), &Some(0));
+        assert_eq!(client.get_role_limits(), (0, 0));
+    }
+
+    #[test]
+    fn test_set_role_limits_unauthorized_fails() {
+        let (env, _admin, client) = setup();
+        let attacker = Address::generate(&env);
+        assert_eq!(
+            client.try_set_role_limits(&attacker, &Some(5), &Some(2)),
+            Err(Ok(AccessError::Unauthorized))
+        );
+        assert_eq!(
+            client.get_role_limits(),
+            (DEFAULT_MAX_ROLES, DEFAULT_MAX_GRANTS_PER_ROLE)
+        );
+    }
+
+    #[test]
     fn test_set_role_admin_unauthorized_fails() {
         let (env, _admin, client) = setup();
         let role = String::from_str(&env, "operator");
