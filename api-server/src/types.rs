@@ -28,6 +28,10 @@ pub struct SimulateRequest {
     pub network_load_bps: u32,
     #[serde(default)]
     pub route_details: Option<RouteDetails>,
+    /// Optional transaction ID. When set, the simulation outcome is published
+    /// as a `status_update` to WebSocket clients subscribed to this ID on `/ws`.
+    #[serde(default)]
+    pub tx_id: Option<String>,
 }
 
 fn default_amount() -> i64 {
@@ -70,6 +74,10 @@ pub struct SimulationDetail {
     pub target: String,
     pub function: String,
     pub would_succeed: bool,
+    /// Diagnostic/contract events returned by the RPC simulation (usually
+    /// base64 XDR). Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<String>,
 }
 
 /// Machine-readable error codes for API error responses.
@@ -166,8 +174,14 @@ pub enum TransactionStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Client -> server message on the `/ws` WebSocket.
+///
+/// Example: `{"action": "subscribe", "tx_id": "abc123"}`
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SubscribeMessage {
+    /// Either `"subscribe"` or `"unsubscribe"`.
+    #[schema(example = "subscribe")]
     pub action: String,
+    /// Transaction ID to (un)subscribe from.
     pub tx_id: String,
 }

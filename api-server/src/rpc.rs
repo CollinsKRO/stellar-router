@@ -43,7 +43,8 @@ pub struct SimulateTransactionResult {
     #[serde(rename = "minResourceFee", default)]
     pub min_resource_fee: String,
     pub error: Option<String>,
-    #[allow(dead_code)]
+    /// Diagnostic/contract events returned by the RPC node. Surfaced to API
+    /// callers as `SimulationDetail.diagnostics`.
     #[serde(default)]
     pub events: Vec<serde_json::Value>,
 }
@@ -76,6 +77,9 @@ pub struct FeeBreakdown {
     /// `false` when the heuristic fallback was used (RPC unreachable).
     #[allow(dead_code)]
     pub simulated: bool,
+    /// Diagnostic events from the RPC simulation, formatted as strings.
+    /// Empty when the heuristic fallback was used.
+    pub diagnostics: Vec<String>,
 }
 
 impl SorobanRpcClient {
@@ -146,6 +150,7 @@ impl SorobanRpcClient {
                     (NORMAL_MULTIPLIER, false)
                 };
                 let total_fee = (base_fee + resource_fee) * surge_multiplier as i64 / 100;
+                let diagnostics = Self::format_events(&result.events);
                 Ok(FeeBreakdown {
                     base_fee,
                     resource_fee,
@@ -155,6 +160,7 @@ impl SorobanRpcClient {
                     would_succeed,
                     fee_estimated,
                     simulated: true,
+                    diagnostics,
                 })
             }
             Err(_) => Ok(Self::heuristic_estimate(amount, network_load_bps)),
@@ -241,9 +247,21 @@ impl SorobanRpcClient {
         Self::parse_route_entry_from_rpc(&result)
     }
 
+    /// Parses the `simulateTransaction` result of a `router-core::get_route`
+    /// call.
+    ///
+    /// `get_route` returns `Option<RouteEntry>`, so a missing route comes back
+    /// as an empty/void result, never as a simulation error. Any `error` field
+    /// therefore means a real failure (contract panic, bad argument, auth
+    /// failure, ...) and is returned as `Err` so the handler answers 500
+    /// instead of a misleading 404.
     fn parse_route_entry_from_rpc(result: &Value) -> Result<Option<RouteEntryResponse>> {
-        if result.get("error").is_some() {
-            return Ok(None);
+        if let Some(err) = result.get("error").filter(|e| !e.is_null()) {
+            let msg = err
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| err.to_string());
+            return Err(anyhow!("contract simulation error: {msg}"));
         }
 
         let results = match result.get("results").and_then(|r| r.as_array()) {
@@ -450,7 +468,20 @@ impl SorobanRpcClient {
             // Fees are a heuristic guess, not an RPC-derived measurement.
             fee_estimated: false,
             simulated: false,
+            diagnostics: Vec::new(),
         }
+    }
+
+    /// Formats raw RPC events as strings. Events are usually base64 XDR
+    /// strings and are passed through as-is; anything else is JSON-encoded.
+    fn format_events(events: &[Value]) -> Vec<String> {
+        events
+            .iter()
+            .map(|e| match e.as_str() {
+                Some(s) => s.to_string(),
+                None => e.to_string(),
+            })
+            .collect()
     }
 }
 

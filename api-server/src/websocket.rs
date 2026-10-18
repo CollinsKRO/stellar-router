@@ -19,7 +19,34 @@ use crate::{
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const PING_INTERVAL: Duration = Duration::from_secs(30);
 
-/// WebSocket upgrade handler
+/// WebSocket endpoint for transaction status updates.
+///
+/// Upgrade with a standard WebSocket handshake, then send JSON
+/// `SubscribeMessage`s:
+///
+/// - `{"action": "subscribe", "tx_id": "<id>"}`
+/// - `{"action": "unsubscribe", "tx_id": "<id>"}`
+///
+/// The server replies with JSON messages of the form
+/// `{"msg_type": "...", "data": {...}}`:
+///
+/// - `subscribed`: `{"tx_id", "status": "subscribed"}`
+/// - `status_update`: `{"tx_id", "status", "timestamp", "message"}`
+///   (a `TransactionStatusEvent`; published by `POST /simulate` when its
+///   request includes `tx_id`)
+/// - `error`: `{"message"}` (e.g. subscription limit reached)
+///
+/// If the server connection limit is reached, the socket receives
+/// `{"error": "connection limit reached"}` and is closed.
+#[utoipa::path(
+    get,
+    path = "/ws",
+    tag = "websocket",
+    responses(
+        (status = 101, description = "Switching protocols to WebSocket (see handler docs for the message protocol)"),
+        (status = 400, description = "Request is not a valid WebSocket upgrade"),
+    )
+)]
 pub async fn ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> impl IntoResponse {
     if !state.try_acquire_ws_connection() {
         return ws
