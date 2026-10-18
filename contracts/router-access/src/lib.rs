@@ -660,6 +660,15 @@ impl RouterAccess {
     ) -> Result<(), AccessError> {
         caller.require_auth();
         Self::require_super_admin(&env, &caller)?;
+
+        // Same guard as `revoke_role`: check the raw storage key so a grant
+        // that never existed is rejected instead of silently emitting a
+        // `role_expired` event for it.
+        let key = DataKey::HasRole(role.clone(), target.clone());
+        if !env.storage().instance().has(&key) {
+            return Err(AccessError::RoleNotFound);
+        }
+
         Self::deactivate_role_grant(&env, &role, &target);
         env.events().publish(
             (Symbol::new(&env, router_common::EVENT_ROLE_EXPIRED),),
@@ -1616,6 +1625,19 @@ mod tests {
         client.grant_role(&admin, &user, &role, &Some(9999));
         let result = client.try_expire_role(&attacker, &role, &user);
         assert_eq!(result, Err(Ok(AccessError::Unauthorized)));
+    }
+
+    // ── Issue #1265: expire_role on a grant that never existed ───────────────
+
+    #[test]
+    fn test_expire_nonexistent_role_fails() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+        // Never granted — must be rejected, not accepted with a misleading
+        // `role_expired` event.
+        let result = client.try_expire_role(&admin, &role, &user);
+        assert_eq!(result, Err(Ok(AccessError::RoleNotFound)));
     }
 
     #[test]
