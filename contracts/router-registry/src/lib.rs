@@ -251,6 +251,12 @@ impl RouterRegistry {
         router_common::extend_instance_ttl(&env, INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         router_common::require_admin_simple!(&env, &caller, &DataKey::Admin, RegistryError)?;
 
+        // Validate the registration (version, duplicates) BEFORE making the
+        // cross-contract health call below. A request that is going to be
+        // rejected anyway must not pay the cost of — or risk the side
+        // effects of — invoking the target contract (issue #1445).
+        Self::validate_registration(&env, &name, version)?;
+
         if let Some(fn_sym) = health_fn {
             // SECURITY (issue #828): `try_invoke_contract` is a real
             // cross-contract call — not a read-only simulation — so the
@@ -272,7 +278,10 @@ impl RouterRegistry {
             }
         }
 
-        Self::register_entry(&env, &caller, name, address, version)
+        // `validate_registration` already ran above, so write directly
+        // rather than re-validating via `register_entry`.
+        Self::write_entry(&env, &caller, name, address, version);
+        Ok(())
     }
 
     /// Register multiple contract entries in one call.
@@ -308,7 +317,34 @@ impl RouterRegistry {
                         idx,
                         Self::registry_error_to_batch(&env, RegistryError::AlreadyRegistered),
                     );
+                    // #1444: emit the aggregate completion event on every
+                    // early-return path, not just the validate_registration
+                    // one below, so event-only subscribers can always see
+                    // that the batch ran.
+                    Self::emit_bulk_register_completed(&env, &caller, &result);
                     return Ok(result);
+                }
+                // #1443: also reject a version that is not strictly greater
+                // than the highest version already accepted for this name
+                // earlier in the same batch. `validate_registration` alone
+                // only compares against storage, so two entries for the same
+                // name within one fail_fast batch (e.g. (x,2) then (x,1))
+                // would otherwise both pass and break the ascending
+                // `Versions` invariant.
+                let highest_in_batch = seen
+                    .iter()
+                    .filter(|(n, _)| n == &entry.name)
+                    .map(|(_, v)| v)
+                    .max();
+                if let Some(highest) = highest_in_batch {
+                    if entry.version <= highest {
+                        result.record_failure(
+                            idx,
+                            Self::registry_error_to_batch(&env, RegistryError::InvalidVersion),
+                        );
+                        Self::emit_bulk_register_completed(&env, &caller, &result);
+                        return Ok(result);
+                    }
                 }
                 if let Err(err) = Self::validate_registration(&env, &entry.name, entry.version) {
                     result.record_failure(idx, Self::registry_error_to_batch(&env, err));
@@ -2325,5 +2361,135 @@ mod tests {
         // "<=2" returns highest non-deprecated version ≤ 2 → version 2
         let result = client.get_latest_with_constraint(&name, &Some(String::from_str(&env, "<=2")));
         assert_eq!(result.version, 2);
+    }
+
+    // ── register_with_check validates before the health call (#1445) ──────────
+
+    /// A target whose `health` panics — used to prove that `health` is never
+    /// actually invoked when the registration itself is invalid. If the
+    /// implementation under test ever reached the cross-contract call before
+    /// validating, this test would fail with a panic rather than observing
+    /// the expected typed error.
+    #[contract]
+    pub struct MockPanicHealthContract;
+
+    #[contractimpl]
+    impl MockPanicHealthContract {
+        pub fn health(_env: Env) {
+            panic!("health must not be invoked before registration validates");
+        }
+    }
+
+    #[test]
+    fn test_register_with_check_invalid_version_skips_health_call() {
+        let (env, admin, client) = setup();
+        let mock_id = env.register_contract(None, MockPanicHealthContract);
+        let name = String::from_str(&env, "oracle");
+        let health_fn = Symbol::new(&env, "health");
+
+        // version 0 is invalid and must be rejected BEFORE the health call,
+        // otherwise the panicking `health` would unwind this test instead of
+        // producing InvalidVersion.
+        let result =
+            client.try_register_with_check(&admin, &name, &mock_id, &0, &Some(health_fn));
+        assert_eq!(result, Err(Ok(RegistryError::InvalidVersion)));
+    }
+
+    #[test]
+    fn test_register_with_check_already_registered_skips_health_call() {
+        let (env, admin, client) = setup();
+        let mock_id = env.register_contract(None, MockPanicHealthContract);
+        let name = String::from_str(&env, "oracle");
+        client.register(&admin, &name, &mock_id, &1);
+
+        let health_fn = Symbol::new(&env, "health");
+        // Re-registering the same (name, version) must be rejected as
+        // AlreadyRegistered before the health call, not ContractUnreachable
+        // or a panic from the target.
+        let result =
+            client.try_register_with_check(&admin, &name, &mock_id, &1, &Some(health_fn));
+        assert_eq!(result, Err(Ok(RegistryError::AlreadyRegistered)));
+    }
+
+    // ── bulk_register fail_fast event + ordering fixes (#1444, #1443) ─────────
+
+    #[test]
+    fn test_bulk_register_fail_fast_duplicate_emits_batch_executed_event() {
+        // Issue #1444: the intra-batch-duplicate early return must still
+        // emit exactly one batch_executed event, same as the
+        // validate_registration early-return path already did.
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        let entries = vec![
+            &env,
+            BulkRegistrationInput {
+                name: name.clone(),
+                address: addr.clone(),
+                version: 1,
+            },
+            BulkRegistrationInput {
+                name: name.clone(),
+                address: addr.clone(),
+                version: 1,
+            },
+        ];
+        let result = client.bulk_register(&admin, &entries, &true);
+        assert_eq!(result.successes.len(), 0);
+        assert_eq!(result.failures.len(), 1);
+        assert_eq!(result.failures.get(0).unwrap().index, 1);
+        assert_eq!(
+            result.failures.get(0).unwrap().error,
+            router_common::BatchItemError::AlreadyExists
+        );
+
+        let event = env.events().all().last().unwrap().clone();
+        assert_eq!(event.0, client.address);
+        assert_eq!(
+            event.1,
+            vec![
+                &env,
+                Symbol::new(&env, router_common::EVENT_BATCH_EXECUTED).into_val(&env)
+            ]
+        );
+        let (caller, op, successes, failures): (Address, String, u32, u32) =
+            event.2.into_val(&env);
+        assert_eq!(caller, admin);
+        assert_eq!(op, String::from_str(&env, "bulk_register"));
+        assert_eq!(successes, 0);
+        assert_eq!(failures, 1);
+    }
+
+    #[test]
+    fn test_bulk_register_fail_fast_rejects_out_of_order_versions() {
+        // Issue #1443: within one fail_fast batch, a lower version for the
+        // same name appearing after a higher one must be rejected with
+        // InvalidVersion, and nothing from the batch may be written.
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let entries = vec![
+            &env,
+            BulkRegistrationInput {
+                name: name.clone(),
+                address: Address::generate(&env),
+                version: 2,
+            },
+            BulkRegistrationInput {
+                name: name.clone(),
+                address: Address::generate(&env),
+                version: 1,
+            },
+        ];
+        let result = client.bulk_register(&admin, &entries, &true);
+        assert_eq!(result.successes.len(), 0);
+        assert_eq!(result.failures.len(), 1);
+        assert_eq!(result.failures.get(0).unwrap().index, 1);
+        assert_eq!(
+            result.failures.get(0).unwrap().error,
+            router_common::BatchItemError::InvalidName
+        );
+        // Nothing should have been written: fail_fast only writes in the
+        // second loop, which never runs once pre-validation fails.
+        assert!(client.versions(&name).is_empty());
     }
 }
