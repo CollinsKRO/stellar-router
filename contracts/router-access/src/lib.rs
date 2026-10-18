@@ -255,9 +255,13 @@ impl RouterAccess {
     /// `expires_at` is the **last valid** timestamp, so the role is still active
     /// when `current_timestamp == expires_at` and expired only once
     /// `current_timestamp > expires_at`.
+    ///
+    /// Returns `false` if `target` still holds `role` through the role
+    /// hierarchy, so this never disagrees with `has_role`.
     pub fn is_role_expired(env: Env, role: String, target: Address) -> bool {
-        // View helper: counter is maintained for active members, but expiry still
-        // uses RoleExpiry storage.
+        if Self::has_role_internal(&env, &target, &role) {
+            return false;
+        }
 
         if let Some(expires_at) = env
             .storage()
@@ -782,7 +786,9 @@ impl RouterAccess {
         match err {
             AccessError::AlreadyHasRole => router_common::BatchItemError::AlreadyExists,
             AccessError::Unauthorized => router_common::BatchItemError::Unauthorized,
-            AccessError::Blacklisted => router_common::BatchItemError::InvalidMetadata,
+            AccessError::Blacklisted => router_common::BatchItemError::Custom(
+                soroban_sdk::String::from_str(env, "Blacklisted"),
+            ),
             AccessError::InvalidExpiry => router_common::BatchItemError::Custom(
                 soroban_sdk::String::from_str(env, "InvalidExpiry"),
             ),
@@ -964,7 +970,7 @@ impl RouterAccess {
                 .unwrap_or(0);
             env.storage()
                 .instance()
-                .set(&DataKey::RoleMemberCount(role.clone()), &(count + 1));
+                .set(&DataKey::RoleMemberCount(role.clone()), &count.saturating_add(1));
         }
 
         let mut roles: Vec<String> = env
@@ -1122,6 +1128,18 @@ mod tests {
     }
 
     // ... (all your existing tests remain unchanged) ...
+
+    #[test]
+    fn test_grant_role_rejects_overflowing_expiry() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+
+        env.ledger().set_timestamp(1);
+        let result = client.try_grant_role(&admin, &user, &role, &Some(u64::MAX));
+        assert_eq!(result, Err(Ok(AccessError::InvalidExpiry)));
+        assert!(!client.has_role(&user, &role));
+    }
 
     #[test]
     fn test_grant_role_fails_when_max_roles_exceeded() {
