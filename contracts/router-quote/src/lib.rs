@@ -579,12 +579,20 @@ impl RouterQuote {
     ///
     /// # Errors
     /// * [`QuoteError::NoQuotesProvided`] — if requests vector is empty.
+    /// * [`QuoteError::NotInitialized`] — if the contract has not been initialized.
     pub fn get_quotes_sorted(
         env: Env,
         requests: Vec<QuoteRequest>,
     ) -> Result<Vec<QuoteResponse>, QuoteError> {
         if requests.is_empty() {
             return Err(QuoteError::NoQuotesProvided);
+        }
+        // #1442: an uninitialized contract must surface NotInitialized
+        // rather than silently dropping every request (each of which fails
+        // with NotInitialized internally) and returning Ok(vec![]), which
+        // looks identical to "no valid routes" to the caller.
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(QuoteError::NotInitialized);
         }
 
         // Collect valid quotes, skipping failures.
@@ -1827,5 +1835,32 @@ mod tests {
 
         let emitted_route: String = data.into_val(&env);
         assert_eq!(emitted_route, route);
+    }
+
+    // ── get_quotes_sorted on an uninitialized contract (#1442) ────────────────
+
+    #[test]
+    fn test_get_quotes_sorted_uninitialized_returns_not_initialized() {
+        // Issue #1442: on an uninitialized contract every per-request
+        // get_quote call fails with NotInitialized internally, which
+        // get_quotes_sorted used to silently skip, returning Ok(vec![]) —
+        // indistinguishable from "no valid routes". It must instead
+        // propagate NotInitialized, matching get_quotes / get_best_quote.
+        let env = Env::default();
+        let contract_id = env.register_contract(None, RouterQuote);
+        let client = RouterQuoteClient::new(&env, &contract_id);
+
+        let token_in = Address::generate(&env);
+        let token_out = Address::generate(&env);
+        let mut requests = Vec::new(&env);
+        requests.push_back(QuoteRequest {
+            route: String::from_str(&env, "uniswap"),
+            token_in,
+            token_out,
+            amount_in: 10000,
+        });
+
+        let result = client.try_get_quotes_sorted(&requests);
+        assert_eq!(result, Err(Ok(QuoteError::NotInitialized)));
     }
 }
