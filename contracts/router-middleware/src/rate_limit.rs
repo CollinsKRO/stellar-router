@@ -35,6 +35,21 @@ pub struct RateLimitCheck {
     pub updated_state: RateLimitState,
 }
 
+/// Whether a rate-limit window that started at `window_start` and lasts
+/// `window` seconds has elapsed as of `now`.
+///
+/// Uses `saturating_add` rather than a plain `+` (issue #1440): a route or
+/// per-caller override may be configured with an arbitrarily large
+/// `window_seconds` (e.g. `u64::MAX`, intended as "effectively forever"), and
+/// `window_start + window` would overflow `u64` and panic under
+/// `overflow-checks = true` — aborting every `pre_call` on that route instead
+/// of simply never rolling the window over. Saturating at `u64::MAX` keeps
+/// `now >= window_start.saturating_add(window)` `false` for any realistic
+/// `now`, which is the correct "never elapses" behavior for such a window.
+pub fn window_elapsed(now: u64, window_start: u64, window: u64) -> bool {
+    now >= window_start.saturating_add(window)
+}
+
 /// Resolve the effective rate-limit window for `caller` on `route`.
 ///
 /// Returns the caller's `CallerRateLimitConfig.window_secs` when a per-caller
@@ -90,13 +105,13 @@ pub fn check_and_increment(
                 total_violations: 0,
             });
 
-    let window_elapsed = now >= state.window_start + effective_window;
-    let calls = if window_elapsed {
+    let elapsed = window_elapsed(now, state.window_start, effective_window);
+    let calls = if elapsed {
         0
     } else {
         state.calls_in_window
     };
-    let window_start = if window_elapsed {
+    let window_start = if elapsed {
         now
     } else {
         state.window_start
@@ -143,7 +158,10 @@ pub fn publish_exceeded(env: &Env, caller: &Address, route: &String) {
 
 /// Reset the rate limit state for a specific caller on a route.
 ///
-/// No-op if the route has no `RouteCallState` yet.
+/// No-op (storage-wise) if the route has no `RouteCallState` yet, but still
+/// publishes `EVENT_RATE_LIMIT_RESET` with `(route, caller)` (issue #1439) —
+/// this is a module-owned transition, matching how `publish_throttled` /
+/// `publish_exceeded` above already publish their own rate-limit events.
 pub fn reset_for_caller(env: &Env, route: &String, caller: &Address) {
     if let Some(mut state) = env
         .storage()
@@ -155,14 +173,19 @@ pub fn reset_for_caller(env: &Env, route: &String, caller: &Address) {
             .instance()
             .set(&DataKey::RouteCallState(route.clone()), &state);
     }
+
+    env.events().publish(
+        (Symbol::new(env, router_common::EVENT_RATE_LIMIT_RESET),),
+        (route.clone(), caller.clone()),
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::RouterMiddleware;
-    use soroban_sdk::testutils::{Address as _, Ledger};
-    use soroban_sdk::Map;
+    use soroban_sdk::testutils::{Address as _, Events, Ledger};
+    use soroban_sdk::{IntoVal, Map};
 
     fn env_with_contract() -> (Env, Address) {
         let env = Env::default();
@@ -284,6 +307,40 @@ mod tests {
         });
     }
 
+    /// Issue #1440: `window_start + window` previously overflowed `u64` for a
+    /// huge window such as `u64::MAX`, which under `overflow-checks = true`
+    /// panics instead of correctly treating the window as never-elapsed.
+    #[test]
+    fn window_elapsed_does_not_overflow_for_huge_window() {
+        assert!(!window_elapsed(1_000, 500, u64::MAX));
+        assert!(!window_elapsed(u64::MAX, 1, u64::MAX));
+    }
+
+    #[test]
+    fn window_elapsed_true_once_window_passes() {
+        assert!(!window_elapsed(1_059, 1_000, 60));
+        assert!(window_elapsed(1_060, 1_000, 60));
+    }
+
+    /// check_and_increment must not panic (and must correctly never roll the
+    /// window over) when configured with `effective_window = u64::MAX`.
+    #[test]
+    fn check_and_increment_does_not_panic_with_huge_window() {
+        let (env, contract_id) = env_with_contract();
+        let caller = Address::generate(&env);
+        env.ledger().set_timestamp(1000);
+        env.as_contract(&contract_id, || {
+            let state = empty_state(&env);
+            let first = check_and_increment(&env, &caller, &state, 1, u64::MAX);
+            assert!(!first.exceeded);
+
+            let mut state = empty_state(&env);
+            state.rate_limits.set(caller.clone(), first.updated_state);
+            let second = check_and_increment(&env, &caller, &state, 1, u64::MAX);
+            assert!(second.exceeded);
+        });
+    }
+
     #[test]
     fn reset_for_caller_removes_existing_entry() {
         let (env, contract_id) = env_with_contract();
@@ -312,5 +369,25 @@ mod tests {
                 .unwrap();
             assert!(!after.rate_limits.contains_key(caller.clone()));
         });
+    }
+
+    /// Issue #1439: reset_for_caller must emit EVENT_RATE_LIMIT_RESET with
+    /// (route, caller), even though it previously changed state silently.
+    #[test]
+    fn reset_for_caller_emits_rate_limit_reset_event() {
+        let (env, contract_id) = env_with_contract();
+        let route = String::from_str(&env, "route");
+        let caller = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            reset_for_caller(&env, &route, &caller);
+        });
+
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+        let topic: Symbol = last_event.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, Symbol::new(&env, router_common::EVENT_RATE_LIMIT_RESET));
+        let (emitted_route, emitted_caller): (String, Address) = last_event.2.into_val(&env);
+        assert_eq!(emitted_route, route);
+        assert_eq!(emitted_caller, caller);
     }
 }

@@ -188,6 +188,19 @@ pub const EVENT_CALLER_RATE_LIMIT_SET: &str = "caller_rate_limit_set";
 /// Standard event topic for a per-caller rate limit override being removed.
 pub const EVENT_CALLER_RATE_LIMIT_REMOVED: &str = "caller_rate_limit_removed";
 
+// Issue #1439: reset_circuit_breaker and reset_rate_limit changed state
+// without emitting any event, unlike every other admin state change in the
+// contract (including the sibling resets reset_guard/reset_route_call_log,
+// which publish EVENT_GUARD_RESET/EVENT_CALL_LOG_CLEARED above).
+
+/// Standard event topic for a route's circuit breaker being manually reset
+/// back to closed state via `reset_circuit_breaker`.
+pub const EVENT_CIRCUIT_RESET: &str = "circuit_reset";
+
+/// Standard event topic for a caller's rate limit counter being manually
+/// reset via `reset_rate_limit`.
+pub const EVENT_RATE_LIMIT_RESET: &str = "rate_limit_reset";
+
 /// Standard event topic for multicall results
 pub const EVENT_CALL_RESULT: &str = "call_result";
 

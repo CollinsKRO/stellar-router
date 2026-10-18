@@ -368,21 +368,40 @@ impl RouterMulticall {
             }
 
             // Prune stale batch results to prevent unbounded ledger growth.
-            if store_results && new_batch_id > MAX_STORED_BATCHES {
+            //
+            // This must run whenever a batch becomes stale, regardless of the
+            // *current* batch's own `store_results` flag: pruning the batch at
+            // `stale_id` depends on whether `stale_id` stored results, not on
+            // whether the batch that happens to retire it does. Gating this on
+            // the current batch's `store_results` (issue #1441) meant that any
+            // batch computing `stale_id == k` with `store_results = false`
+            // skipped the prune entirely, leaking `BatchResult(k, *)` and
+            // `BatchCallCount(k)` forever once no later batch revisited `k`.
+            //
+            // `BatchCallCount(stale_id)` is read as an `Option` rather than via
+            // `.unwrap_or(max)`: a batch that stored nothing has no count, and
+            // falling back to `max` would make every non-storing batch perform
+            // up to `max` pointless `remove`s. Note this intentionally drops
+            // the `unwrap_or(max)` fallback that covered `BatchResult` entries
+            // written before `BatchCallCount` was introduced (#1054) — any such
+            // pre-#1054 entries still within the stored-batches window will no
+            // longer be pruned by this fallback.
+            if !simulate && new_batch_id > MAX_STORED_BATCHES {
                 let stale_id = new_batch_id - MAX_STORED_BATCHES - 1;
-                let stale_count: u32 = env
+                if let Some(stale_count) = env
                     .storage()
                     .instance()
-                    .get(&DataKey::BatchCallCount(stale_id))
-                    .unwrap_or(max);
-                for i in 0..stale_count {
+                    .get::<DataKey, u32>(&DataKey::BatchCallCount(stale_id))
+                {
+                    for i in 0..stale_count {
+                        env.storage()
+                            .instance()
+                            .remove(&DataKey::BatchResult(stale_id, i));
+                    }
                     env.storage()
                         .instance()
-                        .remove(&DataKey::BatchResult(stale_id, i));
+                        .remove(&DataKey::BatchCallCount(stale_id));
                 }
-                env.storage()
-                    .instance()
-                    .remove(&DataKey::BatchCallCount(stale_id));
             }
         }
 
@@ -1024,6 +1043,43 @@ mod tests {
         assert_eq!(cr.target, mock_id);
         assert_eq!(cr.function, Symbol::new(&env, "success"));
         assert!(cr.success);
+    }
+
+    /// Issue #1441: a batch that stored results must still be pruned once it
+    /// becomes stale, even if the batch that retires it runs with
+    /// `store_results = false`. Previously the prune was gated on the
+    /// *current* batch's own `store_results` flag, so batch 0's results (and
+    /// its `BatchCallCount`) leaked forever once no later batch stored
+    /// results.
+    #[test]
+    fn test_stale_results_pruned_even_when_pruning_batch_does_not_store_results() {
+        let (env, _admin, client) = setup();
+        let mock_id = env.register_contract(None, MockContract);
+        let caller = Address::generate(&env);
+
+        let mut calls = Vec::new(&env);
+        calls.push_back(CallDescriptor {
+            target: mock_id.clone(),
+            function: Symbol::new(&env, "success"),
+            required: false,
+            instruction_budget: None,
+            args: Vec::new(&env),
+        });
+
+        // Batch 0: stores results.
+        client.execute_batch(&caller, &calls, &false, &true, &false, &None);
+        assert!(client.get_batch_result(&0u64, &0u32).is_some());
+
+        // MAX_STORED_BATCHES more batches, all with store_results = false.
+        // The batch that computes new_batch_id = MAX_STORED_BATCHES + 1 (i.e.
+        // the (MAX_STORED_BATCHES)th of these, 1-indexed) has stale_id = 0 and
+        // must prune it despite not storing results itself.
+        for _ in 0..MAX_STORED_BATCHES {
+            client.execute_batch(&caller, &calls, &false, &false, &false, &None);
+        }
+
+        assert!(client.get_batch_result(&0u64, &0u32).is_none());
+        assert_eq!(client.get_batch_results(&0u64).len(), 0);
     }
 
     #[test]

@@ -862,10 +862,12 @@ impl RouterCore {
     /// any aliases that point to these routes. Caller must be the admin.
     ///
     /// Behaviour depends on `fail_fast`:
-    /// * `fail_fast = true` — every name is checked first. At the first name
-    ///   that is not a registered route, the call returns a
-    ///   [`router_common::BatchResult`] containing only that item's failure,
-    ///   and no routes are removed.
+    /// * `fail_fast = true` — every name is checked first: it must be a
+    ///   registered route, must not already have appeared earlier in this
+    ///   same batch, and must have no dependents (per the pre-batch
+    ///   dependency state). At the first name that fails any of those
+    ///   checks, the call returns a [`router_common::BatchResult`] containing
+    ///   only that item's failure, and no routes are removed.
     /// * `fail_fast = false` — each name is removed independently. Existing
     ///   routes are removed and recorded in `successes`; each missing route is
     ///   recorded in `failures` with its index and reason. The batch is **not**
@@ -901,18 +903,40 @@ impl RouterCore {
         let mut result = router_common::BatchResult::new(&env);
 
         if fail_fast {
+            // Pre-validation must reject everything `remove_route_internal`
+            // would reject, or the removal loop's `?` aborts the whole call
+            // with Err instead of returning Ok(BatchResult) with an indexed
+            // failure (issue #1437 — the same mid-batch-abort pattern fixed
+            // in router-registry under #826).
+            //
+            // Use a Map for O(1) duplicate-name lookups instead of
+            // Vec::contains, matching register_routes_batch's pre-validation
+            // (issue #1280).
+            let mut seen: Map<String, bool> = Map::new(&env);
             for (index, name) in names.iter().enumerate() {
                 let idx = index as u32;
-                if !env.storage().instance().has(&DataKey::Route(name.clone())) {
-                    result.record_failure(
-                        idx,
-                        router_common::BatchItemError::Custom(soroban_sdk::String::from_str(
-                            &env,
-                            "RouteNotFound",
-                        )),
-                    );
+                // A name that already appeared earlier in this same batch
+                // would be removed by its first occurrence, so the second
+                // occurrence must fail with RouteNotFound exactly like
+                // `remove_route_internal` would once that first removal runs.
+                if seen.contains_key(name.clone())
+                    || !env.storage().instance().has(&DataKey::Route(name.clone()))
+                {
+                    result.record_failure(idx, Self::router_error_to_batch(&env, RouterError::RouteNotFound));
                     return Ok(result);
                 }
+                // A route that other routes depend on cannot be removed —
+                // surface that as a per-index failure during pre-validation
+                // instead of aborting the call with Err(RouteInUse) once the
+                // removal loop reaches it. Note: this checks dependency state
+                // as of before the batch runs, so a route whose only
+                // dependent is removed earlier in this same batch is still
+                // rejected here — an accepted corner case (see doc comment).
+                if Self::route_has_dependents(&env, &name) {
+                    result.record_failure(idx, Self::router_error_to_batch(&env, RouterError::RouteInUse));
+                    return Ok(result);
+                }
+                seen.set(name.clone(), true);
             }
 
             for (index, name) in names.iter().enumerate() {
@@ -5635,6 +5659,60 @@ mod tests {
         // the missing one.
         let resolve_result = client.try_resolve(&name);
         assert!(resolve_result.is_ok());
+    }
+
+    /// Issue #1437: fail_fast pre-validation must also reject a route that
+    /// has dependents, returning Ok(BatchResult) with an indexed RouteInUse
+    /// failure instead of aborting the call with Err(RouteInUse) once the
+    /// removal loop's `?` reaches `remove_route_internal`.
+    #[test]
+    fn test_remove_routes_batch_fail_fast_route_in_use_reports_batch_result() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let dex = String::from_str(&env, "dex");
+        let oracle_addr = Address::generate(&env);
+
+        client.register_route(&admin, &oracle, &oracle_addr, &None);
+        client.register_route(&admin, &dex, &Address::generate(&env), &None);
+        client.set_route_dependency(&admin, &dex, &oracle);
+
+        let names = vec![&env, oracle.clone()];
+        let result = client.remove_routes_batch(&admin, &names, &true);
+        assert_eq!(result.successes.len(), 0);
+        assert_eq!(result.failures.len(), 1);
+        let failure = result.failures.get(0).unwrap();
+        assert_eq!(failure.index, 0);
+        assert_eq!(
+            failure.error,
+            BatchItemError::Custom(String::from_str(&env, "RouteInUse"))
+        );
+        // Nothing was removed.
+        assert_eq!(client.resolve(&oracle), oracle_addr);
+    }
+
+    /// Issue #1437: fail_fast pre-validation must also reject a name listed
+    /// twice in the same batch, failing at the second occurrence's index
+    /// with RouteNotFound (the first occurrence would remove it), returning
+    /// Ok(BatchResult) instead of aborting with Err.
+    #[test]
+    fn test_remove_routes_batch_fail_fast_duplicate_name_reports_batch_result() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr, &None);
+
+        let names = vec![&env, name.clone(), name.clone()];
+        let result = client.remove_routes_batch(&admin, &names, &true);
+        assert_eq!(result.successes.len(), 0);
+        assert_eq!(result.failures.len(), 1);
+        let failure = result.failures.get(0).unwrap();
+        assert_eq!(failure.index, 1);
+        assert_eq!(
+            failure.error,
+            BatchItemError::Custom(String::from_str(&env, "RouteNotFound"))
+        );
+        // Nothing was removed.
+        assert_eq!(client.resolve(&name), addr);
     }
 
     // ΓöÇΓöÇ Issue #582: cached best-route selection & pagination ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ

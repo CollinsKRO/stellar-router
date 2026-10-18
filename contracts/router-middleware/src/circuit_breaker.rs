@@ -104,6 +104,10 @@ pub fn handle_success(env: &Env, route: &String, route_call_state: &mut RouteCal
 }
 
 /// Reset the circuit breaker for a route back to closed state.
+///
+/// Publishes `EVENT_CIRCUIT_RESET` with the route (issue #1439) — this is a
+/// module-owned transition, matching how `handle_failure`/`handle_success`
+/// above already publish their own circuit-breaker events.
 pub fn reset(env: &Env, route: &String) {
     let existing: Option<RouteCallState> = env
         .storage()
@@ -121,6 +125,11 @@ pub fn reset(env: &Env, route: &String) {
             .instance()
             .set(&DataKey::RouteCallState(route.clone()), &state);
     }
+
+    env.events().publish(
+        (Symbol::new(env, router_common::EVENT_CIRCUIT_RESET),),
+        route.clone(),
+    );
 }
 
 /// Return a default `RouteCallState` with a closed circuit breaker.
@@ -294,5 +303,23 @@ mod tests {
                 .get::<DataKey, RouteCallState>(&DataKey::RouteCallState(route.clone()))
                 .is_none());
         });
+    }
+
+    /// Issue #1439: reset must emit EVENT_CIRCUIT_RESET with the route, even
+    /// though it previously changed state silently.
+    #[test]
+    fn reset_emits_circuit_reset_event() {
+        let (env, contract_id) = env_with_contract();
+        let route = String::from_str(&env, "route");
+        env.as_contract(&contract_id, || {
+            reset(&env, &route);
+        });
+
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+        let topic: Symbol = last_event.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, Symbol::new(&env, router_common::EVENT_CIRCUIT_RESET));
+        let emitted_route: String = last_event.2.into_val(&env);
+        assert_eq!(emitted_route, route);
     }
 }
