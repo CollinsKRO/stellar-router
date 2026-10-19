@@ -464,6 +464,7 @@ fn test_simulate_request_serialization() {
             version: Some(1),
             expected_outputs: Some(vec!["1000000".to_string()]),
         }),
+        tx_id: None,
     };
 
     let json = serde_json::to_string(&req).unwrap();

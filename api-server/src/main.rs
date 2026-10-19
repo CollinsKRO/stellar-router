@@ -38,6 +38,7 @@ use crate::{
         crate::handlers::simulate,
         crate::handlers::list_routes,
         crate::handlers::get_route,
+        crate::websocket::ws_handler,
     ),
     components(schemas(
         crate::types::HealthResponse,
@@ -52,11 +53,15 @@ use crate::{
         crate::types::ErrorResponse,
         crate::types::ErrorDetail,
         crate::types::ErrorCode,
+        crate::types::SubscribeMessage,
+        crate::types::TransactionStatusEvent,
+        crate::types::TransactionStatus,
     )),
     tags(
         (name = "health", description = "Health check"),
         (name = "simulation", description = "Transaction simulation"),
         (name = "routes", description = "Route discovery"),
+        (name = "websocket", description = "Real-time transaction status updates over WebSocket"),
     )
 )]
 struct ApiDoc;

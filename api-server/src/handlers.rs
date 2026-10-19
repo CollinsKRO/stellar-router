@@ -4,6 +4,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info};
 
 use crate::{
@@ -11,6 +12,7 @@ use crate::{
     types::{
         ErrorCode, ErrorResponse, FeeEstimate, HealthResponse, RouteEntryResponse,
         RouteListResponse, SimulateRequest, SimulateResponse, SimulationDetail,
+        TransactionStatus, TransactionStatusEvent,
     },
 };
 
@@ -95,16 +97,40 @@ pub async fn simulate(
 
     info!(target = %req.target, function = %req.function, "simulating transaction");
 
-    let breakdown = state
+    let tx_id = req.tx_id.clone().filter(|id| !id.is_empty());
+    if let Some(id) = &tx_id {
+        state.broadcast_status(status_event(id, TransactionStatus::Pending, "simulation started"));
+    }
+
+    let breakdown = match state
         .rpc
         .simulate(&req.target, &req.function, req.amount, req.network_load_bps)
         .await
-        .map_err(|e| {
-            (
+    {
+        Ok(b) => b,
+        Err(e) => {
+            if let Some(id) = &tx_id {
+                state.broadcast_status(status_event(
+                    id,
+                    TransactionStatus::Failed,
+                    &format!("simulation error: {e}"),
+                ));
+            }
+            return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(ErrorCode::RpcError, e.to_string())),
-            )
-        })?;
+            ));
+        }
+    };
+
+    if let Some(id) = &tx_id {
+        let (status, message) = if breakdown.would_succeed {
+            (TransactionStatus::Confirmed, "simulation successful")
+        } else {
+            (TransactionStatus::Failed, "simulation indicates transaction would fail")
+        };
+        state.broadcast_status(status_event(id, status, message));
+    }
 
     Ok(Json(SimulateResponse {
         success: breakdown.would_succeed,
@@ -120,6 +146,7 @@ pub async fn simulate(
             target: req.target,
             function: req.function,
             would_succeed: breakdown.would_succeed,
+            diagnostics: breakdown.diagnostics,
         },
         message: if breakdown.would_succeed {
             "Simulation successful".to_string()
@@ -127,6 +154,21 @@ pub async fn simulate(
             "Simulation indicates transaction would fail".to_string()
         },
     }))
+}
+
+/// Builds a `TransactionStatusEvent` stamped with the current Unix time (seconds).
+fn status_event(tx_id: &str, status: TransactionStatus, message: &str) -> TransactionStatusEvent {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        .to_string();
+    TransactionStatusEvent {
+        tx_id: tx_id.to_string(),
+        status,
+        timestamp,
+        message: Some(message.to_string()),
+    }
 }
 
 #[utoipa::path(
@@ -137,13 +179,14 @@ pub async fn simulate(
         (status = 200, description = "Route entry returned", body = RouteEntryResponse),
         (status = 404, description = "Route not found", body = ErrorResponse),
         (status = 503, description = "Router core contract not configured", body = ErrorResponse),
-        (status = 500, description = "RPC error", body = ErrorResponse),
+        (status = 500, description = "RPC or contract simulation error", body = ErrorResponse),
     )
 )]
 /// GET /routes/:name
 ///
 /// Calls router-core::get_route(name) via the Soroban RPC and returns the
-/// full RouteEntry as JSON. Returns 404 if the route does not exist.
+/// full RouteEntry as JSON. Returns 404 only if the route does not exist;
+/// RPC or contract simulation errors return 500.
 pub async fn get_route(
     State(state): State<AppState>,
     Path(name): Path<String>,
