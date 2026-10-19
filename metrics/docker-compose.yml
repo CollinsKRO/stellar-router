@@ -26,7 +26,7 @@ services:
 
   # Prometheus (optional - for local testing)
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.51.2
     ports:
       - "9091:9090"
     volumes:
@@ -44,7 +44,7 @@ services:
 
   # Grafana (optional - for local testing)
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:10.4.2
     ports:
       - "3000:3000"
     environment:

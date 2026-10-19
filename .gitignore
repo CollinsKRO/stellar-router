@@ -37,9 +37,15 @@ Thumbs.db
 
 # Node / JS tooling (load-test scripts)
 **/node_modules/
+package-lock.json
+yarn.lock
 
 # Profiling / coverage output
 *.profraw
 *.profdata
 lcov.info
 coverage/
+
+# Load-test / artillery report output
+artillery-report*.json
+report.json
