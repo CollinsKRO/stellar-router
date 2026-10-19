@@ -286,9 +286,6 @@ pub const FAILURE_REASON_BUDGET_EXCEEDED: &str = "budget_exceeded";
 /// tests share a single source of truth.
 pub const FAILURE_REASON_INVOKE_FAILED: &str = "invoke_failed";
 
-/// Standard event topic for a role grant (pending or direct)
-pub const EVENT_ROLE_GRANT: &str = "role_grant";
-
 /// Standard event topic for a role expiring
 pub const EVENT_ROLE_EXPIRED: &str = "role_expired";
 

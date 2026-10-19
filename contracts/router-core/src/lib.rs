@@ -2171,13 +2171,14 @@ impl RouterCore {
 
         for name in candidates.iter() {
             // Skip paused or expired routes
-            let entry: Option<RouteEntry> =
-                env.storage().instance().get(&DataKey::Route(name.clone()));
-            let entry = match entry {
-                Some(e) if !e.paused && !is_route_expired(&env, &e) => e,
+            match env
+                .storage()
+                .instance()
+                .get::<DataKey, RouteEntry>(&DataKey::Route(name.clone()))
+            {
+                Some(e) if !e.paused && !is_route_expired(&env, &e) => {}
                 _ => continue,
-            };
-            let _ = entry; // entry validated, not needed further
+            }
 
             // Skip routes without a score
             let score: RouteScore =
