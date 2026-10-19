@@ -48,7 +48,9 @@ impl AppState {
         }
     }
 
-    #[allow(dead_code)]
+    /// Publishes a status event to every `/ws` client subscribed to
+    /// `event.tx_id`. Called by `handlers::simulate` when the request carries
+    /// a `tx_id`.
     pub fn broadcast_status(&self, event: TransactionStatusEvent) {
         let _ = self.tx_status_tx.send(event);
     }

@@ -32,14 +32,21 @@ use soroban_sdk::{
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
+/// Storage keys used by this contract's instance storage.
 #[contracttype]
 pub enum DataKey {
+    /// The admin `Address`, set once during `initialize`.
     Admin,
+    /// The configured maximum number of calls allowed per `execute_batch` invocation.
     MaxBatchSize,
+    /// Cumulative count of successfully completed (non-simulated) batches.
     TotalBatches,
-    Executing,             // reentrancy guard
-    BatchResult(u64, u32), // (batch_id, call_index) -> CallResult
-    BatchCallCount(u64),   // batch_id -> number of BatchResult entries stored for that batch
+    /// Reentrancy guard: `true` while an `execute_batch` invocation is in progress.
+    Executing,
+    /// `(batch_id, call_index) -> CallResult`, populated when `store_results` is `true`.
+    BatchResult(u64, u32),
+    /// `batch_id -> number of BatchResult entries stored for that batch`, used for precise pruning.
+    BatchCallCount(u64),
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
